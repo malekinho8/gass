@@ -2,6 +2,113 @@ import numpy as np
 import scipy.signal as signal
 from scipy.io import wavfile
 import matplotlib.pyplot as plt
+import librosa as lb
+
+def get_western_scale(octaves,freq_low:str,freq_high:str):
+    """
+    This function returns a dictionary that contains the musical notes in the Western scale in the frequency range specified by freq_low and freq_high.
+    
+    Parameters:
+    octaves (int): the number of octaves in the Western scale
+    freq_low (str): the lowest note in the frequency range, in the format "C0", "C#0", "D0", etc.
+    freq_high (str): the highest note in the frequency range, in the format "C0", "C#0", "D0", etc.
+    
+    Returns:
+    Dict[str, float]: a dictionary that maps musical notes to their corresponding frequencies in Hz
+    """
+    # Define the list of musical notes in the Western scale
+    notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    # Define the base frequency for A0
+    A0 = 27.5
+    # Calculate the frequency of each note in the Western scale
+    western_scale = {}
+    for octave in range(8):
+        for i, note in enumerate(notes):
+            key = note + str(octave)
+            freq = A0 * 2**(i/12 + octave)
+            if key == freq_low:
+                L_freq = freq
+            elif key == freq_high:
+                H_freq = freq
+            if L_freq <= freq <= H_freq:
+                western_scale[key] = freq
+    return western_scale
+
+def get_fundamental_frequency(reference_signal,fs,freq_low:str='C1',freq_high:str='C5'):
+    """
+    This function computes the likely fundamental frequency of the input signal.
+    
+    Parameters:
+    reference_signal (ndarray): the input signal
+    fs (float): the sample rate of the input signal, in Hz
+    freq_low (str, optional): the lowest note in the frequency range to consider, in the format "C0", "C#0", "D0", etc. Default is "C1".
+    freq_high (str, optional): the highest note in the frequency range to consider, in the format "C0", "C#0", "D0", etc. Default is "C5".
+    
+    Returns:
+    Tuple[str,float]: the likely fundamental frequency of the input signal, in the format ("C0", float), etc.
+    """
+    n_samples = len(reference_signal)
+    time = np.linspace(0,n_samples/fs,n_samples)
+    scale = get_western_scale(8,freq_low,freq_high)
+    freq_range = scale.values
+    note_range = scale.keys
+    sinusoid_specs = [spectrogram(np.sin(2*np.pi*f)) for f in freq]
+    ref_spec = spectrogram(reference_signal)
+    mse = mse(ref_spec,sinusoid_specs)
+    idx = np.argmax(mse)
+    likely_note, likely_frequency = note_range[idx], freq_range[idx]
+    return likely_note, likely_frequency
+
+def find_fundamental_frequency(periodic_signal:np.ndarray,f_s:int) -> float:
+    periodic_signal = periodic_signal / np.max(periodic_signal)
+    correlations = np.zeros(len(periodic_signal))
+    for m in range(len(correlations)):
+        shifted = np.roll(periodic_signal,m)
+        correlation = np.corrcoef(periodic_signal,shifted)
+        correlations[m] = correlation[0,1] # why?
+    peak_idx = np.argmax(correlations)
+    frequency = f_s / peak_idx
+    return frequency
+
+
+def parse_time_string(time_string:str):
+    """
+    Take a time string in the format of "minutes:seconds" and convert it to the equivalent
+    number of seconds.
+
+    Parameters:
+    time_string (str): The input time string in the format of "minutes:seconds".
+
+    Returns:
+    int: The equivalent number of seconds.
+    """
+    time_parts = time_string.split(':')
+    total_seconds = int(time_parts[0])*60 + int(time_parts[1])
+    return total_seconds
+
+def extract_wav_segment(wav_file:str,time_start:str,time_duration:float) -> dict():
+    """
+    Take a wav file, a time string for the start of the segment, and a duration in seconds and return
+    a dictionary containing the truncated audio signal and the sample rate.
+
+    Parameters:
+    wav_file (str): The path to the wav file.
+    time_start (str): The time string for the start of the segment in the format of "minutes:seconds".
+    time_duration (float): The duration of the segment in seconds.
+
+    Returns:
+    dict: A dictionary containing two keys: 'signal' and 'fs'. The value of 'signal' is the truncated audio signal
+    and the value of 'fs' is the sample rate.
+    """
+    signal, fs = lb.load(wav_file) # load the wav file
+    start_time_sec = parse_time_string(time_start)
+    end_time_sec = start_time_sec + time_duration
+    truncated_signal = signal[start_time_sec*fs:end_time_sec*fs]
+    out = {
+        'signal':truncated_signal,
+        'fs':fs
+    }
+    return out
 
 def adsr_envelope(samples, attack_time, decay_time, sustain_level, release_time, sample_rate):
     """
@@ -82,3 +189,10 @@ def generate_wave(frequency, end_time, amplitude, waveform_type, duty_cycle, att
         filtered_samples = signal.filtfilt(b, a, envelope_samples)    # Add more cases for different filter types as needed
     
     wavfile.write('filtered_samples.wav',sample_rate,filtered_samples)
+
+    out = {
+        'signal':filtered_samples,
+        'fs':sample_rate
+    }
+
+    return out
