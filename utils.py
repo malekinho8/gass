@@ -3,6 +3,82 @@ import scipy.signal as signal
 from scipy.io import wavfile
 import matplotlib.pyplot as plt
 import librosa as lb
+import librosa.display as lbd
+import os
+
+def audio2_mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, zero_padding_factor=1,
+                           window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000, n_mels=256):
+    """
+    Convert a collection of audio files to mel-scaled spectrograms.
+
+    Args:
+    audio_folder_path: str
+        The path to the folder containing the audio files.
+        The audio files should be named in the format of "0.wav, 1.wav, 2.wav, ...".
+    plot_flag: bool, default=False
+        Whether to plot the mel-scaled spectrograms.
+    window_size: int, default=2048
+        The size of the FFT window to use.
+    zero_padding_factor: int, default=1
+        The amount of zero-padding to use in the FFT.
+    window_type: str, default='hann'
+        The type of window function to use in the FFT.
+    gain_db: float, default=0.0
+        The gain to apply to the audio signal in decibels.
+    range_db: float, default=80.0
+        The range of the mel-scaled spectrogram in decibels.
+    high_boost_db: float, default=0.0
+        The amount of high-frequency boost to apply to the mel-scaled spectrogram in decibels.
+    f_min: int, default=0
+        The minimum frequency to include in the spectrogram (Hz)
+    f_max: int, default=20000
+        The maximum frequency to include in the spectrogram (Hz)
+    n_mels: int, default=256
+        The number of mel frequency bins to include in the spectrogram
+
+    Returns:
+    list
+        A list of mel-scaled spectrograms, where each element is a NumPy array.
+    """
+
+    # Get a list of audio file names in the folder
+    audio_file_names = sorted(os.listdir(audio_folder_path))
+
+    # Compute mel-scaled spectrograms for each audio file
+    mel_spectrograms = []
+    for file_name in audio_file_names:
+        audio_file_path = os.path.join(audio_folder_path, file_name)
+        signal, sample_rate = lb.load(audio_file_path)
+
+        # Apply gain to the audio signal
+        signal = lb.util.normalize(signal) * lb.db_to_amplitude(gain_db)
+
+        # Compute the mel-scaled spectrogram
+        fft_size = window_size * zero_padding_factor
+        hop_length = window_size // 2
+        mel_filterbank = lb.filters.mel(sr=sample_rate, n_fft=fft_size, n_mels=n_mels)
+        window = lb.filters.get_window(window_type, window_size, fftbins=True)
+        spectrogram = np.abs(lb.stft(signal, n_fft=fft_size, hop_length=hop_length, window=window))**2
+        mel_spectrogram = lb.feature.melspectrogram(S=spectrogram, sr=sample_rate, n_mels=n_mels,
+                                                     fmax=f_max, htk=True, norm=None)
+        mel_spectrogram = lb.power_to_db(mel_spectrogram, ref=np.max)
+
+        # Apply range and high boost to the mel-scaled spectrogram
+        mel_spectrogram = np.clip(mel_spectrogram, a_min=-range_db, a_max=None)
+        mel_spectrogram = mel_spectrogram + high_boost_db
+
+        # Plot the mel-scaled spectrogram if plot_flag is True
+        if plot_flag:
+            plt.figure(figsize=(10, 4))
+            lbd.specshow(mel_spectrogram, x_axis='time', y_axis='mel',sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap='plasma', vmin=-range_db, vmax=mel_spectrogram.max() + high_boost_db)
+            plt.colorbar(format='%+2.0f dB')
+            plt.title('Mel spectrogram for {}'.format(file_name))
+            plt.tight_layout()
+            plt.show()
+        
+        mel_spectrograms.append(mel_spectrogram)
+
+    return mel_spectrograms
 
 def get_western_scale(octaves,freq_low:str,freq_high:str):
     """
@@ -52,10 +128,11 @@ def get_fundamental_frequency(reference_signal,fs,freq_low:str='C1',freq_high:st
     scale = get_western_scale(8,freq_low,freq_high)
     freq_range = scale.values
     note_range = scale.keys
-    sinusoid_specs = [spectrogram(np.sin(2*np.pi*f)) for f in freq]
+    sinusoid_specs = [spectrogram(np.sin(2*np.pi*f)) for f in freq_range]
     ref_spec = spectrogram(reference_signal)
+    # add normalization?
     mse = mse(ref_spec,sinusoid_specs)
-    idx = np.argmax(mse)
+    idx = np.argmin(mse)
     likely_note, likely_frequency = note_range[idx], freq_range[idx]
     return likely_note, likely_frequency
 
