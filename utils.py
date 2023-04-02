@@ -5,8 +5,147 @@ import matplotlib.pyplot as plt
 import librosa as lb
 import librosa.display as lbd
 import os
+import random
+import dawdreamer as daw
+import json
+import xmltodict
+import difflib
+import re
 
-def audio2_mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, zero_padding_factor=1,
+def piano_note_to_midi_note(piano_note):
+    # Define lists of piano note names and their corresponding MIDI note numbers
+    piano_notes = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#']
+    midi_notes = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+    # Extract the octave and note name from the piano note input
+    octave = int(piano_note[-1])
+    note_name = piano_note[:-1]
+
+    # Find the index of the note name in the piano_notes list and add the corresponding MIDI note number
+    note_num = piano_notes.index(note_name)
+    midi_note = midi_notes[note_num] + (octave + 1) * 12
+
+    return midi_note
+
+def read_txt(path: str) -> str:
+    with open(path, 'r') as file:
+        txt = file.read()
+    return txt
+
+def get_xml_preset_settings(preset_path: str):
+    # read the preset_path using with ... as 'rb' ... etc.
+    txt = read_txt(preset_path)
+    preset_settings = None
+
+    # Assuming the presence of "<?xml" at the start of the file indicates an XML file
+    if txt.strip().startswith("<?xml"):
+        try:
+            # Convert XML to a dictionary
+            xml_dict = xmltodict.parse(txt)
+
+            # Convert the dictionary to JSON (optional)
+            preset_settings = json.dumps(xml_dict)
+        except Exception as e:
+            print(f"Error: {e}")
+            raise ValueError("Unable to parse XML file")
+    else:
+        raise ValueError("Unsupported file type")
+
+    return preset_settings
+
+def make_json_parameter_mapping(plugin, preset_path:str):
+    # read the XML preset path
+    preset_settings = get_xml_preset_settings(preset_path)
+
+    # apply the synth preset settings to the synth plugin processor object
+    parameter_mapping = {}
+
+    # Load JSON settings
+    settings = json.loads(preset_settings)
+
+    # Extract the program settings
+    json_keys = settings["tal"]["programs"]["program"]
+
+    # Get the parameters description from the plugin
+    parameters = plugin.get_parameters_description()
+
+    # Create a dictionary with parameter names as keys and their indices as values
+    param_name_to_index = {param["name"]: param["index"] for param in parameters}
+
+    # Iterate over each JSON key
+    for key in json_keys:
+        # specify the exceptions to map manually
+        exceptions = {
+            'volume':'master volume', 
+            'octavetranspose':'master octave transpose',
+            'adsrdecay':'decay',
+            'adsrsustain':'sustain',
+            'adsrrelease':'release',
+            'chorus1enable':'chorus 1',
+            'chorus2enable':'chorus 2',
+            'midiclocksync':'clock sync',
+            'miditriggerarp16sync':'trigger arp by midi channel 16'
+            }
+
+        if key.split('@')[-1] not in exceptions: # find the closest match automatically           
+            # Find the closest match in the plugin parameter name list using max() and difflib.SequenceMatcher
+            closest_match = max(param_name_to_index.keys(), key=lambda param_name: difflib.SequenceMatcher(None, key, param_name).ratio())
+
+            if key.split('@')[-1][0] == closest_match[0]: # only continue if the first letters are the same and specified exceptions
+                print(f'match found for {key}; closest match: {closest_match}')
+                # Extract the value of the JSON key from the JSON string using regex
+                match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
+                if match_value:
+                    param_value = float(match_value.group(1))
+                    index = param_name_to_index[closest_match]
+                    parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+            else:
+                print(f'no match found for {key}; closest match: {closest_match}')
+        else:
+            # map manually
+            key_temp = key.split('@')[-1]
+
+            # get closest_match from exceptions list
+            closest_match = exceptions[key_temp]
+
+            # Extract the value of the JSON key from the JSON string using regex
+            match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
+            if match_value:
+                param_value = float(match_value.group(1))
+                index = param_name_to_index[closest_match]
+
+            parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+    
+    preset_name = preset_path.split(os.sep)[-1].split('.pjunoxl')[0]
+    with open(f'TAL-UNO-{preset_name}-parameter-mapping.json', 'w') as outfile:
+        json.dump(parameter_mapping, outfile)
+
+def load_xml_preset(dawdreamer_plugin,parameter_mapping_json):
+    # Load JSON file into a dictionary
+    with open(parameter_mapping_json, 'r') as infile:
+        parameter_map = json.load(infile)
+
+    # Get the parameters description from the plugin
+    parameters = dawdreamer_plugin.get_parameters_description()
+
+    # Create a dictionary with parameter names as keys and their indices as values
+    param_name_to_index = {param["name"]: param["index"] for param in parameters}
+
+    # Iterate over each JSON key
+    for key in parameter_map.keys():
+        dawdreamer_plugin.set_parameter(parameter_map[key]['index'], parameter_map[key]['value'])
+    
+    return dawdreamer_plugin
+
+def select_preset_path(folder_path, preset_ext):
+    preset_files = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith(preset_ext):
+                preset_files.append(os.path.join(root, file))
+    return random.choice(preset_files) if preset_files else None
+
+def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, zero_padding_factor=1,
                            window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000, n_mels=256):
     """
     Convert a collection of audio files to mel-scaled spectrograms.
@@ -70,7 +209,7 @@ def audio2_mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048,
         # Plot the mel-scaled spectrogram if plot_flag is True
         if plot_flag:
             plt.figure(figsize=(10, 4))
-            lbd.specshow(mel_spectrogram, x_axis='time', y_axis='mel',sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap='plasma', vmin=-range_db, vmax=mel_spectrogram.max() + high_boost_db)
+            lbd.specshow(mel_spectrogram, x_axis='time', y_axis='mel',sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap='jet', vmin=-range_db, vmax=mel_spectrogram.max() + high_boost_db)
             plt.colorbar(format='%+2.0f dB')
             plt.title('Mel spectrogram for {}'.format(file_name))
             plt.tight_layout()
