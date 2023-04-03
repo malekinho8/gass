@@ -3,7 +3,7 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from scipy.io.wavfile import write
-from utils import *
+from src.utils import *
 import re
 import difflib
 import json
@@ -14,7 +14,6 @@ BUFFER_SIZE = 128 # Parameters will undergo automation at this buffer/block size
 PPQN = 960 # Pulses per quarter note.
 SYNTH_PLUGIN = "/Library/Audio/Plug-Ins/VST3/TAL-U-NO-LX-V2.vst3"  # extensions: .dll, .vst3, .vst, .component
 SYNTH_NAME = "TAL-Uno"
-REVERB_PLUGIN = "C:/path/to/reverb.dll"  # extensions: .dll, .vst3, .vst, .component
 PRESET_FOLDER = "/Users/malek8/Library/Application Support/ToguAudioLine/TAL-U-No-LX/presets"
 PRESET_EXT = ".pjunoxl"
 
