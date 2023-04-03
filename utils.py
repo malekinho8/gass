@@ -13,6 +13,15 @@ import difflib
 import re
 
 def piano_note_to_midi_note(piano_note):
+    """
+    Convert a string representation of a piano note to its corresponding MIDI note number.
+    
+    Args:
+        piano_note (str): A string representation of a piano note (e.g. 'C4').
+    
+    Returns:
+        int: The MIDI note number corresponding to the input piano note.
+    """
     # Define lists of piano note names and their corresponding MIDI note numbers
     piano_notes = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#']
     midi_notes = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
@@ -28,11 +37,29 @@ def piano_note_to_midi_note(piano_note):
     return midi_note
 
 def read_txt(path: str) -> str:
+    """
+    Read the contents of a text file and return as a string.
+    
+    Args:
+        path (str): The path to the text file to be read.
+    
+    Returns:
+        str: The contents of the text file as a string.
+    """
     with open(path, 'r') as file:
         txt = file.read()
     return txt
 
 def get_xml_preset_settings(preset_path: str):
+    """
+    Read a preset file in XML format and convert it to a dictionary.
+    
+    Args:
+        preset_path (str): The path to the preset file.
+    
+    Returns:
+        str: The preset settings in JSON format as a string.
+    """
     # read the preset_path using with ... as 'rb' ... etc.
     txt = read_txt(preset_path)
     preset_settings = None
@@ -53,74 +80,109 @@ def get_xml_preset_settings(preset_path: str):
 
     return preset_settings
 
-def make_json_parameter_mapping(plugin, preset_path:str):
-    # read the XML preset path
-    preset_settings = get_xml_preset_settings(preset_path)
+def make_json_parameter_mapping(plugin, preset_path:str, verbose=True):
+    """
+    Read a preset file in XML format, apply the settings to the plugin, and create a JSON file
+    that maps the preset parameters to the plugin parameters.
+    
+    Args:
+        plugin (dawdreamer.PluginProcessor): The plugin to which the preset settings will be applied.
+        preset_path (str): The path to the preset file in XML format.
+        verbose (bool): if True, it will print parameter mapping. Default is True.
+    
+    Returns:
+        str: The name of the JSON file containing the parameter mapping.
+    """
+    # create the json preset folder if it does not already exist
+    json_preset_folder = f'TAL-UNO_json_presets'
+    if not os.path.exists(json_preset_folder):
+        os.mkdir(json_preset_folder)
 
-    # apply the synth preset settings to the synth plugin processor object
-    parameter_mapping = {}
+    # specify the output json filename
+    preset_name = preset_path.split(os.sep)[-1].split('.pjunoxl')[0]
+    output_name = f'{json_preset_folder}{os.sep}TAL-UNO-{preset_name}-parameter-mapping.json'
 
-    # Load JSON settings
-    settings = json.loads(preset_settings)
+    if not os.path.exists(output_name):
+        # read the XML preset path
+        preset_settings = get_xml_preset_settings(preset_path)
 
-    # Extract the program settings
-    json_keys = settings["tal"]["programs"]["program"]
+        # apply the synth preset settings to the synth plugin processor object
+        parameter_mapping = {}
 
-    # Get the parameters description from the plugin
-    parameters = plugin.get_parameters_description()
+        # Load JSON settings
+        settings = json.loads(preset_settings)
 
-    # Create a dictionary with parameter names as keys and their indices as values
-    param_name_to_index = {param["name"]: param["index"] for param in parameters}
+        # Extract the program settings
+        json_keys = settings["tal"]["programs"]["program"]
 
-    # Iterate over each JSON key
-    for key in json_keys:
-        # specify the exceptions to map manually
-        exceptions = {
-            'volume':'master volume', 
-            'octavetranspose':'master octave transpose',
-            'adsrdecay':'decay',
-            'adsrsustain':'sustain',
-            'adsrrelease':'release',
-            'chorus1enable':'chorus 1',
-            'chorus2enable':'chorus 2',
-            'midiclocksync':'clock sync',
-            'miditriggerarp16sync':'trigger arp by midi channel 16'
-            }
+        # Get the parameters description from the plugin
+        parameters = plugin.get_parameters_description()
 
-        if key.split('@')[-1] not in exceptions: # find the closest match automatically           
-            # Find the closest match in the plugin parameter name list using max() and difflib.SequenceMatcher
-            closest_match = max(param_name_to_index.keys(), key=lambda param_name: difflib.SequenceMatcher(None, key, param_name).ratio())
+        # Create a dictionary with parameter names as keys and their indices as values
+        param_name_to_index = {param["name"]: param["index"] for param in parameters}
 
-            if key.split('@')[-1][0] == closest_match[0]: # only continue if the first letters are the same and specified exceptions
-                print(f'match found for {key}; closest match: {closest_match}')
+        # Iterate over each JSON key
+        for key in json_keys:
+            # specify the exceptions to map manually
+            exceptions = {
+                'volume':'master volume', 
+                'octavetranspose':'master octave transpose',
+                'adsrdecay':'decay',
+                'adsrsustain':'sustain',
+                'adsrrelease':'release',
+                'chorus1enable':'chorus 1',
+                'chorus2enable':'chorus 2',
+                'midiclocksync':'clock sync',
+                'miditriggerarp16sync':'trigger arp by midi channel 16'
+                }
+
+            if key.split('@')[-1] not in exceptions: # find the closest match automatically           
+                # Find the closest match in the plugin parameter name list using max() and difflib.SequenceMatcher
+                closest_match = max(param_name_to_index.keys(), key=lambda param_name: difflib.SequenceMatcher(None, key, param_name).ratio())
+
+                if key.split('@')[-1][0] == closest_match[0]: # only continue if the first letters are the same and specified exceptions
+                    if verbose:
+                        print(f'match found for {key}; closest match: {closest_match}')
+                    # Extract the value of the JSON key from the JSON string using regex
+                    match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
+                    if match_value:
+                        param_value = float(match_value.group(1))
+                        index = param_name_to_index[closest_match]
+                        parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+                else:
+                    if verbose:
+                        print(f'no match found for {key}; closest match: {closest_match}')
+            else:
+                # map manually
+                key_temp = key.split('@')[-1]
+
+                # get closest_match from exceptions list
+                closest_match = exceptions[key_temp]
+
                 # Extract the value of the JSON key from the JSON string using regex
                 match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
                 if match_value:
                     param_value = float(match_value.group(1))
                     index = param_name_to_index[closest_match]
-                    parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
-            else:
-                print(f'no match found for {key}; closest match: {closest_match}')
-        else:
-            # map manually
-            key_temp = key.split('@')[-1]
 
-            # get closest_match from exceptions list
-            closest_match = exceptions[key_temp]
+                parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+        
+        
+        with open(output_name, 'w') as outfile:
+            json.dump(parameter_mapping, outfile)  
 
-            # Extract the value of the JSON key from the JSON string using regex
-            match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
-            if match_value:
-                param_value = float(match_value.group(1))
-                index = param_name_to_index[closest_match]
-
-            parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
-    
-    preset_name = preset_path.split(os.sep)[-1].split('.pjunoxl')[0]
-    with open(f'TAL-UNO-{preset_name}-parameter-mapping.json', 'w') as outfile:
-        json.dump(parameter_mapping, outfile)
+    return output_name      
 
 def load_xml_preset(dawdreamer_plugin,parameter_mapping_json):
+    """
+    Load a preset into a plugin using a JSON file that maps preset parameters to plugin parameters.
+    
+    Args:
+        dawdreamer_plugin (dawdreamer.PluginProcessor): The plugin to which the preset settings will be applied.
+        parameter_mapping_json (str): The path to the JSON file that maps preset parameters to plugin parameters.
+    Returns:
+        dawdreamer.PluginProcessor: The plugin with the preset settings applied.
+    """
     # Load JSON file into a dictionary
     with open(parameter_mapping_json, 'r') as infile:
         parameter_map = json.load(infile)
@@ -138,6 +200,16 @@ def load_xml_preset(dawdreamer_plugin,parameter_mapping_json):
     return dawdreamer_plugin
 
 def select_preset_path(folder_path, preset_ext):
+    """
+    Select a random preset file path from a preset folder path and its subdirectories.
+    
+    Args:
+        folder_path (str): The path to the folder to search for preset files.
+        preset_ext (str): The file extension of the preset files to search for (e.g. ".pjunoxl").
+    
+    Returns:
+        str or None: The path to a randomly selected preset file, or None if no preset files are found.
+    """
     preset_files = []
     for root, dirs, files in os.walk(folder_path):
         for file in files:
@@ -145,43 +217,32 @@ def select_preset_path(folder_path, preset_ext):
                 preset_files.append(os.path.join(root, file))
     return random.choice(preset_files) if preset_files else None
 
+
 def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, zero_padding_factor=1,
                            window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000, n_mels=256):
     """
     Convert a collection of audio files to mel-scaled spectrograms.
-
+    
     Args:
-    audio_folder_path: str
-        The path to the folder containing the audio files.
-        The audio files should be named in the format of "0.wav, 1.wav, 2.wav, ...".
-    plot_flag: bool, default=False
-        Whether to plot the mel-scaled spectrograms.
-    window_size: int, default=2048
-        The size of the FFT window to use.
-    zero_padding_factor: int, default=1
-        The amount of zero-padding to use in the FFT.
-    window_type: str, default='hann'
-        The type of window function to use in the FFT.
-    gain_db: float, default=0.0
-        The gain to apply to the audio signal in decibels.
-    range_db: float, default=80.0
-        The range of the mel-scaled spectrogram in decibels.
-    high_boost_db: float, default=0.0
-        The amount of high-frequency boost to apply to the mel-scaled spectrogram in decibels.
-    f_min: int, default=0
-        The minimum frequency to include in the spectrogram (Hz)
-    f_max: int, default=20000
-        The maximum frequency to include in the spectrogram (Hz)
-    n_mels: int, default=256
-        The number of mel frequency bins to include in the spectrogram
-
+        audio_folder_path (str): The path to the folder containing the audio files.
+        plot_flag (bool, optional): Whether to plot the mel-scaled spectrograms. Defaults to False.
+        window_size (int, optional): The size of the FFT window to use. Defaults to 2048.
+        zero_padding_factor (int, optional): The amount of zero-padding to use in the FFT. Defaults to 1.
+        window_type (str, optional): The type of window function to use in the FFT. Defaults to 'hann'.
+        gain_db (float, optional): The gain to apply to the audio signal in decibels. Defaults to 0.0.
+        range_db (float, optional): The range of the mel-scaled spectrogram in decibels. Defaults to 80.0.
+        high_boost_db (float, optional): The amount of high-frequency boost to apply to the mel-scaled spectrogram in decibels. Defaults to 0.0.
+        f_min (int, optional): The minimum frequency to include in the spectrogram (Hz). Defaults to 0.
+        f_max (int, optional): The maximum frequency to include in the spectrogram (Hz). Defaults to 20000.
+        n_mels (int, optional): The number of mel frequency bins to include in the spectrogram. Defaults to 256.
+    
     Returns:
-    list
-        A list of mel-scaled spectrograms, where each element is a NumPy array.
+        list: A list of mel-scaled spectrograms, where each element is a NumPy array.
     """
 
     # Get a list of audio file names in the folder
-    audio_file_names = sorted(os.listdir(audio_folder_path))
+    audio_file_names = os.listdir(audio_folder_path)
+    np.random.shuffle(audio_file_names)
 
     # Compute mel-scaled spectrograms for each audio file
     mel_spectrograms = []
@@ -209,6 +270,7 @@ def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, 
         # Plot the mel-scaled spectrogram if plot_flag is True
         if plot_flag:
             plt.figure(figsize=(10, 4))
+            # TODO: Need to fix spectrogram visualization frequency axis!
             lbd.specshow(mel_spectrogram, x_axis='time', y_axis='mel',sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap='jet', vmin=-range_db, vmax=mel_spectrogram.max() + high_boost_db)
             plt.colorbar(format='%+2.0f dB')
             plt.title('Mel spectrogram for {}'.format(file_name))
@@ -216,6 +278,9 @@ def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, 
             plt.show()
         
         mel_spectrograms.append(mel_spectrogram)
+
+        if len(mel_spectrograms) > 4:
+            break
 
     return mel_spectrograms
 
