@@ -1,10 +1,12 @@
 import dawdreamer as daw
 import numpy as np
 from scipy.io.wavfile import write
-import sys
+import os
+import sys; sys.path.append(f'{os.sep}'.join(sys.path[0].split(os.sep)[0:-1]))
 import librosa as lb
-from utils import *
-from . import utils
+import torch
+from musicnn.extractor import extractor
+from src.utils import *
 
 # define constants
 SAMPLE_RATE = 22050
@@ -54,13 +56,14 @@ if not os.path.exists('output'):
     os.mkdir('output')
 
 # write the output to a WAV file
-out_name = json_file_name.split(os.sep)[-1].split('json')[0]
-write(f'output{os.sep}{out_name}-d{DURATION}-{NOTE}.wav', SAMPLE_RATE, audio[0,:])
+out_name = json_file_name.split(os.sep)[-1].split('.json')[0].split('-parameter-mapping')[0]
+file_name = f'output{os.sep}{out_name}-d{DURATION}-{NOTE}.wav'
+write(file_name, SAMPLE_RATE, audio[0,:])
 
 # get the spectrogram
 specs = audio2mel_spectrogram(audio_folder_path='output',plot_flag=True,zero_padding_factor=1,range_db=80,gain_db=20, n_mels=128, f_max=4096)
 
-# obtain timbral features from sound using z(y) --> load a pre-trained neural network (Choi 2017)
+# obtain timbral features from sound using MFCC
 mfcc = lb.feature.mfcc(y=audio[0,:],sr=SAMPLE_RATE)
 mfccs = []
 for spec in specs:
@@ -70,3 +73,16 @@ for spec in specs:
 fig, ax = plt.subplots(4,1,figsize=(10,8))
 for i in range(0,4):
     img = lb.display.specshow(mfccs[i], x_axis='time', ax=ax[i])
+
+# obtain timbral features from sound using pre-trained neural network (pons 2018)
+taggram, tags, features = extractor(file_name, model='MTT_musicnn', extract_features=True)
+list(features.keys())
+
+# create plot of feature vector
+plt.plot(features['penultimate'][0,:])
+plt.show()
+
+# save the feature vector
+folder = 'features'
+pt_name = file_name.replace('.wav','.pt').split(os.sep)[-1]
+torch.save(features['penultimate'],os.path.join(folder,pt_name))

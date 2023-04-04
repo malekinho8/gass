@@ -18,7 +18,6 @@ PRESET_FOLDER = "/Users/malek8/Library/Application Support/ToguAudioLine/TAL-U-N
 PRESET_EXT = ".pjunoxl"
 
 # create a RenderEngine object
-test = np.array([1,2,3,4,5])
 engine = daw.RenderEngine(sample_rate=SAMPLE_RATE, block_size=BUFFER_SIZE) # what does block_size do?
 
 # create the plugin object
