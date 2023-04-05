@@ -12,6 +12,126 @@ import xmltodict
 import difflib
 import re
 
+def plot_specs(spectrograms, sample_rate, f_max, plot_size=(2, 2), num_cols=3, f_min=0, hop_length=512, cmap='jet', range_db=80.0, high_boost_db=0.0):
+    """
+    Plot a grid of spectrograms using librosa and matplotlib.
+
+    Parameters
+        spectrograms : list of np.ndarray
+            List of spectrograms, where each spectrogram is a 2D numpy array with shape (T, F).
+        plot_size : tuple of int, optional
+            Size of each spectrogram plot in inches. Default is (4, 4).
+        num_cols : int, optional
+            Number of columns in the plot grid. Default is 4.
+        sample_rate : int, optional
+            Sampling rate of the audio. Default is 22050.
+        f_min : int, optional
+            Minimum frequency for the mel spectrogram. Default is 0.
+        f_max : int, optional
+            Maximum frequency for the mel spectrogram. Default is None (i.e., sample_rate / 2).
+        hop_length : int, optional
+            Hop length (in samples) between consecutive frames of the spectrogram. Default is 512.
+        cmap : str or matplotlib colormap, optional
+            Colormap for the spectrogram plot. Default is 'jet'.
+        range_db : float, optional
+            Dynamic range of the spectrogram (in decibels). Default is 80.0.
+        high_boost_db : float, optional
+            High-frequency boost (in decibels) applied to the spectrogram. Default is 10.0.
+
+    Returns
+        fig : matplotlib.figure.Figure
+            The matplotlib figure object.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from plot_grid import plot_grid
+    >>> import librosa
+    >>> audio, sr = librosa.load("example.wav", sr=22050)
+    >>> spectrograms = [librosa.feature.melspectrogram(y=audio, sr=sr, n_fft=2048, hop_length=512, n_mels=128) for _ in range(10)]
+    >>> plot_specs(spectrograms, plot_size=(6, 6), num_cols=3, sample_rate=sr, f_min=0, f_max=8000)
+    """
+
+    # Calculate the number of rows needed for the plot grid
+    num_rows = int(np.ceil(len(spectrograms) / num_cols))
+
+    # Create a new figure and axis object for the plot
+    fig, ax = plt.subplots(num_rows, num_cols, figsize=(num_cols*plot_size[0], num_rows*plot_size[1]))
+
+    # Flatten the axis object if there is only one row
+    if num_rows == 1:
+        ax = np.array([ax])
+
+    # Loop through the spectrograms and plot each one in the grid
+    for i, spectrogram in enumerate(spectrograms):
+        row_idx = i // num_cols
+        col_idx = i % num_cols
+        lbd.specshow(spectrogram, x_axis='time', y_axis='mel', sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap=cmap, ax=ax[row_idx, col_idx], vmin=-range_db, vmax=spectrogram.max() + high_boost_db)
+        if not(row_idx == 0 and col_idx == 0):
+            ax[row_idx, col_idx].set_xticks([])
+            ax[row_idx, col_idx].set_yticks([])
+            ax[row_idx, col_idx].set_yticklabels([])
+            ax[row_idx, col_idx].set_xticklabels([])
+            
+    plt.show()
+    plt.tight_layout()
+
+def check_threshold(audio, threshold):
+        """
+        Checks if the disproportionality threshold condition is met.
+        
+        Parameters:
+            audio (numpy.ndarray): The audio signal as a NumPy array.
+            threshold (float): The disproportionality threshold between 0 and 1.
+                        A lower value means the user wants more of the signal to be non-silent.
+        
+        Returns:
+            bool: True if the threshold condition is met, False otherwise.
+        """
+        silence_threshold = 0.02 * np.max(audio)
+        silent_samples = np.sum(np.abs(audio) <= silence_threshold)
+        non_silent_samples = np.sum(np.abs(audio) > silence_threshold)
+        ratio = silent_samples / (silent_samples + non_silent_samples)
+        return ratio <= threshold
+
+def find_duration_by_truncation(NOTE, initial_duration, disproportionality_threshold, engine, synth_plugin):
+    """
+    Finds the optimal midi duration to use for a synth preset with an iteratively adjusted duration based on a disproportionality threshold.
+    
+    The function starts with the initial duration provided by the user and shortens it iteratively
+    until the disproportionality threshold is met or the duration is too short.
+    
+    Parameters:
+        NOTE (str): The piano note as a string (e.g., "C4", "A#3").
+        initial_duration (float): The initial duration of the audio signal in seconds.
+        disproportionality_threshold (float): The disproportionality threshold between 0 and 1.
+                                        A lower value means the user wants more of the signal to be non-silent.
+                                        
+    Returns:
+        numpy.ndarray: The optimal duration for the synth plugin preset given as input.
+    """
+    duration = initial_duration
+    while True:
+        # Convert the piano note to midi (0 to 127)
+        midi_piano_note = piano_note_to_midi_note(NOTE)
+
+        # Generate a sound using the plugin (MIDI note, velocity, start sec, duration sec)
+        synth_plugin.add_midi_note(midi_piano_note, 60, 0.0, duration)
+        engine.load_graph([(synth_plugin, [])])
+
+        # Render the audio
+        engine.render(duration)
+        audio = engine.get_audio()
+
+        # Check if the threshold condition is met, or if the duration cannot be shortened further
+        if check_threshold(audio, disproportionality_threshold) or duration <= 0.1:
+            break
+
+        # Shorten the duration by 10% for the next iteration
+        duration *= 0.9
+
+    return duration
+
 def normalize_data(data):
     """
     Apply min-max scaling to a data array.
@@ -20,7 +140,7 @@ def normalize_data(data):
     max_val = np.max(data)
     return (data - min_val) / (max_val - min_val)
 
-def piano_note_to_midi_note(piano_note):
+def piano_note_to_midi_note(note_name):
     """
     Convert a string representation of a piano note to its corresponding MIDI note number.
     
@@ -30,19 +150,27 @@ def piano_note_to_midi_note(piano_note):
     Returns:
         int: The MIDI note number corresponding to the input piano note.
     """
-    # Define lists of piano note names and their corresponding MIDI note numbers
-    piano_notes = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#']
-    midi_notes = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    # Define a dictionary that maps note names to their corresponding MIDI note numbers
+    note_to_midi = {
+        "C0": 12, "C#0": 13, "Db0": 13, "D0": 14, "D#0": 15, "Eb0": 15, "E0": 16, "F0": 17, "F#0": 18, "Gb0": 18, "G0": 19, "G#0": 20, "Ab0": 20, "A0": 21, "A#0": 22, "Bb0": 22, "B0": 23,
+        "C1": 24, "C#1": 25, "Db1": 25, "D1": 26, "D#1": 27, "Eb1": 27, "E1": 28, "F1": 29, "F#1": 30, "Gb1": 30, "G1": 31, "G#1": 32, "Ab1": 32, "A1": 33, "A#1": 34, "Bb1": 34, "B1": 35,
+        "C2": 36, "C#2": 37, "Db2": 37, "D2": 38, "D#2": 39, "Eb2": 39, "E2": 40, "F2": 41, "F#2": 42, "Gb2": 42, "G2": 43, "G#2": 44, "Ab2": 44, "A2": 45, "A#2": 46, "Bb2": 46, "B2": 47,
+        "C3": 48, "C#3": 49, "Db3": 49, "D3": 50, "D#3": 51, "Eb3": 51, "E3": 52, "F3": 53, "F#3": 54, "Gb3": 54, "G3": 55, "G#3": 56, "Ab3": 56, "A3": 57, "A#3": 58, "Bb3": 58, "B3": 59,
+        "C4": 60, "C#4": 61, "Db4": 61, "D4": 62, "D#4": 63, "Eb4": 63, "E4": 64, "F4": 65, "F#4": 66, "Gb4": 66, "G4": 67, "G#4": 68, "Ab4": 68, "A4": 69, "A#4": 70, "Bb4": 70, "B4": 71,
+        "C5": 72, "C#5": 73, "Db5": 73, "D5": 74, "D#5": 75, "Eb5": 75, "E5": 76, "F5": 77, "F#5": 78, "Gb5": 78, "G5": 79, "G#5": 80, "Ab5": 80, "A5": 81, "A#5": 82, "Bb5": 82, "B5": 83, "C6": 84, "C#6": 85, "Db6": 85, "D6": 86, "D#6": 87, "Eb6": 87, "E6": 88, "F6": 89, "F#6": 90, "Gb6": 90, "G6": 91,
+        "G#6": 92, "Ab6": 92, "A6": 93, "A#6": 94, "Bb6": 94, "B6": 95, "C7": 96, "C#7": 97, "Db7": 97, "D7": 98, "D#7": 99, "Eb7": 99, "E7": 100, "F7": 101, "F#7": 102, "Gb7": 102, "G7": 103,
+        "G#7": 104, "Ab7": 104, "A7": 105, "A#7": 106, "Bb7": 106, "B7": 107, "C8": 108, "C#8": 109, "Db8": 109, "D8": 110, "D#8": 111, "Eb8": 111, "E8": 112, "F8": 113, "F#8": 114, "Gb8": 114, "G8": 115,
+        "G#8": 116, "Ab8": 116, "A8": 117, "A#8": 118, "Bb8": 118, "B8": 119, "C9": 120, "C#9": 121, "Db9": 121, "D9": 122, "D#9": 123, "Eb9": 123, "E9": 124, "F9": 125, "F#9": 126, "Gb9": 126, "G9": 127
+    }
 
-    # Extract the octave and note name from the piano note input
-    octave = int(piano_note[-1])
-    note_name = piano_note[:-1]
+    # Convert the input note_name to uppercase
+    note_name = note_name.upper()
 
-    # Find the index of the note name in the piano_notes list and add the corresponding MIDI note number
-    note_num = piano_notes.index(note_name)
-    midi_note = midi_notes[note_num] + (octave + 1) * 12
-
-    return midi_note
+    # Check if the note_name is in the note_to_midi dictionary
+    if note_name in note_to_midi:
+        return note_to_midi[note_name]
+    else:
+        raise ValueError(f"Invalid note name: {note_name}")
 
 def read_txt(path: str) -> str:
     """
@@ -224,6 +352,57 @@ def select_preset_path(folder_path, preset_ext):
             if file.endswith(preset_ext):
                 preset_files.append(os.path.join(root, file))
     return random.choice(preset_files) if preset_files else None
+
+def wav2spec(signal: np.ndarray, sample_rate: int, plot_flag=False, window_size=2048, zero_padding_factor=1,
+             window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000, n_mels=256):
+    """
+    Convert a signal to a mel-scaled spectrogram.
+
+    Args:
+        signal (np.ndarray): The input signal as a NumPy array.
+        sample_rate (int): The sample rate of the input signal.
+        plot_flag (bool, optional): Whether to plot the mel-scaled spectrogram. Defaults to False.
+        window_size (int, optional): The size of the FFT window to use. Defaults to 2048.
+        zero_padding_factor (int, optional): The amount of zero-padding to use in the FFT. Defaults to 1.
+        window_type (str, optional): The type of window function to use in the FFT. Defaults to 'hann'.
+        gain_db (float, optional): The gain to apply to the audio signal in decibels. Defaults to 0.0.
+        range_db (float, optional): The range of the mel-scaled spectrogram in decibels. Defaults to 80.0.
+        high_boost_db (float, optional): The amount of high-frequency boost to apply to the mel-scaled spectrogram in decibels. Defaults to 0.0.
+        f_min (int, optional): The minimum frequency to include in the spectrogram (Hz). Defaults to 0.
+        f_max (int, optional): The maximum frequency to include in the spectrogram (Hz). Defaults to 20000.
+        n_mels (int, optional): The number of mel frequency bins to include in the spectrogram. Defaults to 256.
+
+    Returns:
+        np.ndarray: The mel-scaled spectrogram.
+    """
+
+    # Apply gain to the audio signal
+    signal = lb.util.normalize(signal) * lb.db_to_amplitude(gain_db)
+
+    # Compute the mel-scaled spectrogram
+    fft_size = window_size * zero_padding_factor
+    hop_length = window_size // 2
+    mel_filterbank = lb.filters.mel(sr=sample_rate, n_fft=fft_size, n_mels=n_mels)
+    window = lb.filters.get_window(window_type, window_size, fftbins=True)
+    spectrogram = np.abs(lb.stft(signal, n_fft=fft_size, hop_length=hop_length, window=window))**2
+    mel_spectrogram = lb.feature.melspectrogram(S=spectrogram, sr=sample_rate, n_mels=n_mels,
+                                                 fmax=f_max, htk=True, norm=None)
+    mel_spectrogram = lb.power_to_db(mel_spectrogram, ref=np.max)
+
+    # Apply range and high boost to the mel-scaled spectrogram
+    mel_spectrogram = np.clip(mel_spectrogram, a_min=-range_db, a_max=None)
+    mel_spectrogram = mel_spectrogram + high_boost_db
+
+    # Plot the mel-scaled spectrogram if plot_flag is True
+    if plot_flag:
+        plt.figure(figsize=(10, 4))
+        lb.specshow(mel_spectrogram,x_axis='time', y_axis='mel', sr=sample_rate, fmin=f_min, fmax=f_max, hop_length=hop_length, cmap='jet', vmin=-range_db, vmax=mel_spectrogram.max() + high_boost_db)
+        plt.colorbar(format='%+2.0f dB')
+        plt.title('Mel spectrogram')
+        plt.tight_layout()
+        plt.show()
+
+    return mel_spectrogram
 
 
 def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, zero_padding_factor=1,
