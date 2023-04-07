@@ -11,6 +11,11 @@ import json
 import xmltodict
 import difflib
 import re
+import sounddevice as sd
+
+def play_audio(audio,sample_rate):
+    sd.play(audio, sample_rate)
+    sd.wait()
 
 def plot_specs(spectrograms, sample_rate, f_max, plot_size=(2, 2), num_cols=3, f_min=0, hop_length=512, cmap='jet', range_db=80.0, high_boost_db=0.0):
     """
@@ -94,7 +99,7 @@ def check_threshold(audio, threshold):
         ratio = silent_samples / (silent_samples + non_silent_samples)
         return ratio <= threshold
 
-def find_duration_by_truncation(NOTE, initial_duration, disproportionality_threshold, engine, synth_plugin):
+def find_duration_by_truncation(NOTE, synth_duration, midi_duration, disproportionality_threshold, engine, synth_plugin):
     """
     Finds the optimal midi duration to use for a synth preset with an iteratively adjusted duration based on a disproportionality threshold.
     
@@ -103,34 +108,35 @@ def find_duration_by_truncation(NOTE, initial_duration, disproportionality_thres
     
     Parameters:
         NOTE (str): The piano note as a string (e.g., "C4", "A#3").
-        initial_duration (float): The initial duration of the audio signal in seconds.
+        synth_duration (float): The initial duration of the audio signal in seconds.
+        midi_duration (float): The initial duration of the midi note in seconds.
         disproportionality_threshold (float): The disproportionality threshold between 0 and 1.
                                         A lower value means the user wants more of the signal to be non-silent.
                                         
     Returns:
         numpy.ndarray: The optimal duration for the synth plugin preset given as input.
     """
-    duration = initial_duration
+    duration = synth_duration
     while True:
         # Convert the piano note to midi (0 to 127)
         midi_piano_note = piano_note_to_midi_note(NOTE)
 
         # Generate a sound using the plugin (MIDI note, velocity, start sec, duration sec)
-        synth_plugin.add_midi_note(midi_piano_note, 60, 0.0, duration)
+        synth_plugin.add_midi_note(midi_piano_note, 100, 0.0, midi_duration)
         engine.load_graph([(synth_plugin, [])])
 
         # Render the audio
-        engine.render(duration)
+        engine.render(synth_duration)
         audio = engine.get_audio()
 
         # Check if the threshold condition is met, or if the duration cannot be shortened further
-        if check_threshold(audio, disproportionality_threshold) or duration <= 0.1:
+        if check_threshold(audio, disproportionality_threshold) or midi_duration <= 0.1:
             break
 
         # Shorten the duration by 10% for the next iteration
-        duration *= 0.9
+        midi_duration *= 0.9
 
-    return duration
+    return midi_duration
 
 def normalize_data(data):
     """
@@ -138,7 +144,9 @@ def normalize_data(data):
     """
     min_val = np.min(data)
     max_val = np.max(data)
-    return (data - min_val) / (max_val - min_val)
+    data = data - min_val
+    data = data / (max_val - min_val)
+    return data
 
 def piano_note_to_midi_note(note_name):
     """
