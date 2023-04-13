@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import scipy.signal as signal
 from scipy.io import wavfile
 import matplotlib.pyplot as plt
@@ -13,6 +14,132 @@ import difflib
 import re
 import sounddevice as sd
 
+# make the same function below, but add documentation in the style of the rest of the code
+def load_plugin_with_dawdreamer(synth_plugin,synth_name,engine):
+    """
+    Load a plugin with dawdreamer.
+
+    Parameters
+        synth_plugin : str
+            Path to the plugin.
+        synth_name : str
+            Name of the plugin.
+        sample_rate : int
+            Sampling rate of the audio.
+        buffer_size : int
+            Buffer size of the audio.
+    
+    Returns
+        plugin : dawdreamer.plugin.PluginProcessor
+            Plugin object. See dawdreamer documentation for more information.
+
+    """
+    # create the plugin object
+    plugin = engine.make_plugin_processor(synth_name, synth_plugin)
+    assert plugin.get_name() == synth_name
+
+    return plugin
+
+def create_preset_dataset(preset_path:str,synth_plugin,synth_name,sample_rate,buffer_size,piano_notes,midi_duration,preset_ext,verbose=False):
+    """
+    Create a dataset of audio files with different synth presets.
+
+    Parameters
+        preset_path : str
+            Path to the preset folder.
+        synth_plugin : str
+            Path to the plugin.
+        synth_name : str
+            Name of the plugin.
+        sample_rate : int
+            Sampling rate of the audio.
+        buffer_size : int
+            Buffer size of the audio.
+        piano_notes : list of str
+            List of piano notes to generate audio for.
+        midi_duration : int
+            Duration of the audio in seconds.
+        preset_ext : str
+            Extension of the preset files.
+        verbose : bool, optional
+            Print information about the process. Default is False.
+    
+    Returns
+        preset_dataset : dict
+            Dictionary of audio files with different synth presets.
+
+    """
+    assert midi_duration < 1, "midi_duration (how long the midi note is played for) must be less than 1 second"
+    # create a RenderEngine object
+    engine = daw.RenderEngine(sample_rate=sample_rate, block_size=buffer_size)
+    
+    # load plugin with dawdreamer
+    plugin = load_plugin_with_dawdreamer(synth_plugin,synth_name,engine)
+
+    # create a dictionary to store the audio files
+    preset_dataset = {
+        'preset_names':[],
+        'raw_audio':[],
+        'MFCCs':[],
+    }
+
+    # get a full list of presets to iterate over
+    preset_paths = []
+    for root, dirs, files in os.walk(preset_path):
+        for file in files:
+            if file.endswith(preset_ext):
+                preset_paths.append(os.path.join(root, file))
+
+    # iterate over the presets
+    for preset_path in preset_paths:
+        # get the preset name
+        preset_name = os.path.basename(preset_path).split('.')[0]
+
+        # obtain the parameter mapping and save to json file
+        json_file_location = make_json_parameter_mapping(plugin,preset_path,verbose=verbose)
+
+        # load the preset to the synth
+        loaded_preset_synth = load_xml_preset(plugin, json_file_location)
+
+        # create a dictionary to store the audio files
+        preset_dataset['preset_names'].append(preset_name)
+
+        # create a dictionary to store the audio files
+        preset_dataset['raw_audio'].append({})
+
+        # create a dictrionary to store the MFCCs
+        preset_dataset['MFCCs'].append({})
+
+        # iterate over the piano notes
+        for piano_note in piano_notes:
+            # convert the piano note to midi (0 to 127)
+            midi_piano_note = piano_note_to_midi_note(piano_note)
+
+            # generate a sound using the plugin (MIDI note, velocity, start sec, duration sec)
+            loaded_preset_synth.add_midi_note(midi_piano_note, 127, 0.0, midi_duration)
+
+            engine.load_graph([(loaded_preset_synth, [])])
+
+            # loaded_preset_synth.open_editor()
+            engine.render(1) # use *1.2 to capture release/reverb
+            
+            # render the audio
+            audio = engine.get_audio()
+
+            # compute the MFCC of the audio
+            mfcc = lb.feature.mfcc(y=audio[0,:],sr=sample_rate)
+
+            # store the audio in the dictionary
+            preset_dataset["raw_audio"][-1][piano_note] = torch.tensor(audio[0,:],dtype=torch.float32)
+
+            # store the MFCC in the dictionary
+            preset_dataset["MFCCs"][-1][piano_note] = torch.tensor(mfcc,dtype=torch.float32)
+
+    # save the dataset as a torch file
+    torch.save(preset_dataset, 'preset_dataset.pt')
+
+    return preset_dataset
+            
 def play_audio(audio,sample_rate):
     sd.play(audio, sample_rate)
     sd.wait()

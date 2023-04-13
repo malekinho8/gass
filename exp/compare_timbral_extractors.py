@@ -35,9 +35,6 @@ assert plugin.get_name() == SYNTH_NAME
 preset_path = select_preset_path(PRESET_FOLDER,PRESET_EXT)
 
 # create JSON parameter map and save it
-make_json_parameter_mapping(plugin,preset_path)
-
-# create JSON parameter map and save it
 json_file_name = make_json_parameter_mapping(plugin,preset_path,verbose=False)
 
 # apply the synth preset settings to the synth plugin processor object
@@ -54,6 +51,7 @@ mfcc_features = []
 musicnn_features = []
 specs = []
 raw_signals = []
+vgg_features = []
 
 for NOTE in NOTES:
     # convert the piano note to midi (0 to 127)
@@ -86,11 +84,15 @@ for NOTE in NOTES:
     # obtain timbral features from sound using pre-trained neural network (pons 2018)
     taggram, tags, features = extractor(file_name, model='MTT_musicnn', extract_features=True)
 
+    # obtain timbral features from sound using VGG pre-trained neural network (pons 2018)
+    taggram_vgg, tags_vgg, features_vgg = extractor(file_name, model='MTT_vgg', extract_features=True)
+
     # Append the extracted features
     mfcc_features.append(mfcc)
     musicnn_features.append(features['penultimate'][0,:])
     specs.append(spec)
     raw_signals.append(audio[0,:])
+    vgg_features.append(features_vgg['penultimate'][0,:])
 
 # plot spectrograms
 spec_fig = plot_specs(specs,SAMPLE_RATE,4096)
@@ -100,12 +102,14 @@ mfcc_features_stacked = np.stack(mfcc_features, axis=0)
 musicnn_features_stacked = np.stack(musicnn_features, axis=0)
 specs_stacked = np.stack(specs, axis=0)
 raw_stacked = np.stack(raw_signals, axis=0)
+vgg_features_stacked = np.stack(vgg_features, axis=0)
 
 # Normalize the MFCC and Musicnn feature datasets for fair comparison
 mfcc_features_normalized = normalize_data(mfcc_features_stacked)
 musicnn_features_normalized = normalize_data(musicnn_features_stacked)
 raw_normalized = normalize_data(raw_stacked)
 specs_normalized = normalize_data(specs_stacked)
+vgg_features_normalized = normalize_data(vgg_features_stacked)
 
 # Compute the standard deviation of the elements in each list
 baseline_raw = np.std(raw_normalized,axis=0)
