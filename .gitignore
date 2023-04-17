@@ -1,0 +1,13 @@
+.vscode/
+.ipynb_checkpoints/
+dataset/.ipynb_checkpoints/
+exp/.ipynb_checkpoints/
+exp/output/*.wav
+results/
+TAL-UNO_json_presets/
+output/
+sandbox/
+TAL-UNO_json_presets/
+*.DS_Store
+*.pt
+datasets/*.pt

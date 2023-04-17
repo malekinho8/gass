@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import scipy.signal as signal
 from scipy.io import wavfile
+from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import librosa as lb
 import librosa.display as lbd
@@ -13,8 +14,244 @@ import xmltodict
 import difflib
 import re
 import sounddevice as sd
+import plotly.graph_objs as go
+from IPython.display import Audio, display
+import librosa
 
-# make the same function below, but add documentation in the style of the rest of the code
+def play_audio(raw_signal_numpy, sr=44100):
+    display(Audio(raw_signal_numpy, rate=sr))
+
+def create_custom_scatter(df, x_col, y_col, label_col, audio_col):
+    fig = go.Figure()
+
+    for label in df[label_col].unique():
+        filtered_df = df[df[label_col] == label]
+        scatter = go.Scatter(
+            x=filtered_df[x_col],
+            y=filtered_df[y_col],
+            mode="markers",
+            name=label,
+            text=filtered_df.index,
+            customdata=filtered_df[audio_col],
+            hovertemplate="Index: %{text}<extra></extra>",
+        )
+        fig.add_trace(scatter)
+
+    fig.update_layout(title="TSNE Plot", hovermode="closest")
+
+    def on_hover(trace, points, state):
+        if points.point_inds:
+            index = points.point_inds[0]
+            raw_audio = trace.customdata[index]
+            play_audio(raw_audio)
+
+    fig.data[0].on_hover(on_hover)
+
+    return fig
+
+def normalize_zero_to_one(data, min_value=None, max_value=None):
+    """
+    Normalize the data to be between 0 and 1.
+
+    Parameters
+        data : numpy.ndarray
+            Data to normalize.
+    
+    Returns
+        normalized_data : numpy.ndarray
+            Normalized data.
+    """
+    if min_value is None and max_value is None:
+        normalized_data = (data - torch.min(data)) / (torch.max(data) - torch.min(data))
+    else:
+        normalized_data = (data - min_value) / (max_value - min_value)
+    return normalized_data
+
+def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample_rate,buffer_size,piano_notes,midi_duration,preset_ext,extractor,verbose=False):
+    """
+    Create a dataset of audio files with different synth presets.
+
+    Parameters
+        preset_path : str
+            Path to the preset folder.
+        synth_plugin : str
+            Path to the plugin.
+        synth_name : str
+            Name of the plugin.
+        sample_rate : int
+            Sampling rate of the audio.
+        buffer_size : int
+            Buffer size of the audio.
+        piano_notes : list of str
+            List of piano notes to generate audio for.
+        midi_duration : int
+            Duration of the audio in seconds.
+        preset_ext : str
+            Extension of the preset files.
+        extractor : function
+            Musicnn function to extract the parameters from the preset.
+        verbose : bool, optional
+            Print information about the process. Default is False.
+    
+    Returns
+        preset_dataset : dict
+            Dictionary of audio files with different synth presets.
+
+    """
+    assert midi_duration < 1, "midi_duration (how long the midi note is played for) must be less than 1 second"
+    # create a RenderEngine object
+    engine = daw.RenderEngine(sample_rate=sample_rate, block_size=buffer_size)
+    
+    # load plugin with dawdreamer
+    plugin = load_plugin_with_dawdreamer(synth_plugin,synth_name,engine)
+
+    # create a dictionary to store the audio files
+    preset_dataset = {
+        'preset_names':[],
+        'parameters':[],
+        'parameters_names':[],
+        'mapped_parameter_names':[],
+        'raw_audio':[],
+        'musicnn_features':[],
+    }
+
+    # get a full list of presets to iterate over
+    preset_paths = []
+    for root, dirs, files in os.walk(preset_path):
+        for file in files:
+            if file.endswith(preset_ext):
+                preset_paths.append(os.path.join(root, file))
+
+    # iterate over the presets
+    for preset_path in preset_paths:
+        # get the preset name
+        preset_name = os.path.basename(preset_path).split('.')[0]
+
+        # obtain the parameter mapping and save to json file
+        json_file_location = make_json_parameter_mapping(plugin,preset_path,verbose=verbose)
+
+        # obtain the parameters and their names
+        parameter_names, parameter_mapped, parameter_values  = get_parameter_lists(json_file_location) 
+
+        # load the preset to the synth
+        loaded_preset_synth = load_xml_preset(plugin, json_file_location)
+
+        # create a dictionary to store the audio files
+        preset_dataset['preset_names'].append(preset_name)
+
+        # create a dictionary to store the audio files
+        preset_dataset['raw_audio'].append({})
+
+        # create a dictrionary to store the MFCCs
+        preset_dataset['musicnn_features'].append({})
+
+        # create a list to store the parameters
+        preset_dataset['parameters'].append(parameter_values)
+
+        # create a list to stor the parameter names
+        preset_dataset['parameters_names'].append(parameter_names)
+
+        # create a list to store the mapped parameter names
+        preset_dataset['mapped_parameter_names'].append(parameter_mapped)
+
+        # iterate over the piano notes
+        for piano_note in piano_notes:
+            # convert the piano note to midi (0 to 127)
+            midi_piano_note = piano_note_to_midi_note(piano_note)
+
+            # generate a sound using the plugin (MIDI note, velocity, start sec, duration sec)
+            loaded_preset_synth.add_midi_note(midi_piano_note, 127, 0.0, midi_duration)
+
+            engine.load_graph([(loaded_preset_synth, [])])
+
+            # loaded_preset_synth.open_editor()
+            engine.render(3) # use *1.2 to capture release/reverb
+            
+            # render the audio
+            audio = engine.get_audio()
+
+            # save the file temporarily
+            file_name = f'temp{piano_note}.wav'
+            wavfile.write(file_name, sample_rate, audio[0,:])
+
+            # obtain timbral features from sound using pre-trained neural network (pons 2018)
+            taggram, tag, features = extractor(file_name, model='MTT_musicnn', extract_features=True)
+
+            # remove the wav file
+            os.remove(file_name)
+
+            # store the audio in the dictionary
+            preset_dataset["raw_audio"][-1][piano_note] = torch.tensor(audio[0,:],dtype=torch.float32)
+
+            # store the MFCC in the dictionary
+            preset_dataset["musicnn_features"][-1][piano_note] = torch.tensor(features['timbral'][0,:],dtype=torch.float32)
+
+    # save the dataset as a torch file
+    torch.save(preset_dataset, 'preset_dataset_musicnn.pt')
+
+    return preset_dataset
+
+def generate_tsne(data, perplexity=15, learning_rate=200, random_state=42):
+    """
+    Reduce the dimensionality of the data using t-SNE to 2 dimensions.
+
+    Parameters
+        data : numpy.ndarray
+            Data to reduce the dimensionality of.
+        perplexity : int, optional
+            Perplexity of the t-SNE algorithm. Default is 40.
+        learning_rate : int, optional
+            Learning rate of the t-SNE algorithm. Default is 200.
+        random_state : int, optional
+            Random state of the t-SNE algorithm. Default is 42.
+    
+    Returns
+        transformed_data : numpy.ndarray
+            Data with reduced dimensionality.        
+    """
+    tsne = TSNE(n_components=2, perplexity=perplexity, learning_rate=learning_rate, random_state=random_state)
+    transformed_data = tsne.fit_transform(data)
+    return transformed_data
+
+# add documentation for this code in the same style sa the rest of the code
+def categorize_name(name):
+    """
+    Put the preset name into an instrumental category.
+
+    Parameters
+        name : str
+            Name of the preset.
+    
+    Returns
+        category : str
+            Instrumental category of the preset.
+    
+    Examples
+    --------
+    >>> categorize_name("PAD 1")
+    "Synth Pads"
+
+    """
+    categories = {
+        "Synth Pads": ["PAD"],
+        "Bass": ["BAS", "Bass"],
+        "Leads": ["LED", "Lead"],
+        "Arpeggios": ["ARP", "Arp"],
+        "Pianos & Keyboards": ["PNO", "Piano", "KEY", "Keys", "KBD", "Celesta", "Clavinet", "Clavichord", "Harpsichord"],
+        "Strings": ["STR", "Strings", "Violine"],
+        "Organs": ["ORG", "Organ"],
+        "Brass & Woodwinds": ["BRS", "Brass", "Horn", "Trumpet", "WND", "Flute", "Oboe", "Clarinet", "English Horn"],
+        "Guitars": ["GTR", "Guitar"],
+        "Miscellaneous/Other": ["SFX", "DRM", "PRC", "SYN", "MFX", "MT", "The Difference", "FN", "FMR"],
+    }
+    
+    for category, keywords in categories.items():
+        for keyword in keywords:
+            if keyword in name:
+                return category
+                
+    return "Miscellaneous/Other"
+
 def load_plugin_with_dawdreamer(synth_plugin,synth_name,engine):
     """
     Load a plugin with dawdreamer.
@@ -442,7 +679,31 @@ def make_json_parameter_mapping(plugin, preset_path:str, verbose=True):
         with open(output_name, 'w') as outfile:
             json.dump(parameter_mapping, outfile)  
 
-    return output_name      
+    return output_name
+
+def get_parameter_lists(parameter_mapping_json):
+    """
+    Get the parameter lists from a JSON file that maps preset parameters to plugin parameters.
+    
+    Args:
+        parameter_mapping_json (str): The path to the JSON file that maps preset parameters to plugin parameters.
+    
+    Returns:
+        list: A list of parameter names.
+        list: A list of parameter values.
+        list: A list of parameter indices.
+    """
+    # Load JSON file into a dictionary
+    with open(parameter_mapping_json, 'r') as infile:
+        parameter_map = json.load(infile)
+
+    # Get the parameter names, values, and indices
+    parameter_names = [param for param in parameter_map.keys()]
+    parameter_mapped = [param for param in parameter_map.values()]
+    parameter_values = [parameter_map[param]['value'] for param in parameter_map.keys()]
+    parameter_indices = [parameter_map[param]['index'] for param in parameter_map.keys()]
+
+    return parameter_names, parameter_mapped, parameter_values
 
 def load_xml_preset(dawdreamer_plugin,parameter_mapping_json):
     """
