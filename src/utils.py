@@ -13,10 +13,45 @@ import json
 import xmltodict
 import difflib
 import re
+import librosa
 import sounddevice as sd
 import plotly.graph_objs as go
 from IPython.display import Audio, display
-import librosa
+from scipy.ndimage.filters import gaussian_filter1d
+
+ATTACK_INDEX = 22 # Known value for TAL-Uno Synth
+
+def get_cosine_similarity(vector_a, vector_b):
+    # Calculate the dot product
+    dot_product = np.dot(vector_a, vector_b)
+
+    # Calculate the norms (lengths) of each vector
+    norm_a = np.linalg.norm(vector_a)
+    norm_b = np.linalg.norm(vector_b)
+
+    # Calculate the cosine similarity
+    similarity = dot_product / (norm_a * norm_b)
+
+    return similarity
+
+def scale_midi_duration_by_attack(attack_value,min_midi_duration=0.1,max_midi_duration=0.9):
+    """
+    Scale the midi duration from 0.1 seconds to 0.9 seconds depending on the attack parameter.
+
+    Parameters
+        min_midi_duration : float
+            Minimum midi duration.
+        max_midi_duration : float
+            Maximum midi duration.
+        attack_value : float
+            Attack value of the preset, between 0 and 1.
+    
+    Returns
+        midi_duration : float
+            Scaled midi duration.
+    """
+    midi_duration = min_midi_duration + (max_midi_duration - min_midi_duration) * attack_value
+    return midi_duration
 
 def play_audio(raw_signal_numpy, sr=44100):
     display(Audio(raw_signal_numpy, rate=sr))
@@ -67,7 +102,7 @@ def normalize_zero_to_one(data, min_value=None, max_value=None):
         normalized_data = (data - min_value) / (max_value - min_value)
     return normalized_data
 
-def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample_rate,buffer_size,piano_notes,midi_duration,preset_ext,extractor,verbose=False):
+def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample_rate,buffer_size,piano_notes,preset_ext,extractor,verbose=False):
     """
     Create a dataset of audio files with different synth presets.
 
@@ -84,8 +119,6 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
             Buffer size of the audio.
         piano_notes : list of str
             List of piano notes to generate audio for.
-        midi_duration : int
-            Duration of the audio in seconds.
         preset_ext : str
             Extension of the preset files.
         extractor : function
@@ -98,7 +131,6 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
             Dictionary of audio files with different synth presets.
 
     """
-    assert midi_duration < 1, "midi_duration (how long the midi note is played for) must be less than 1 second"
     # create a RenderEngine object
     engine = daw.RenderEngine(sample_rate=sample_rate, block_size=buffer_size)
     
@@ -154,6 +186,12 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
         # create a list to store the mapped parameter names
         preset_dataset['mapped_parameter_names'].append(parameter_mapped)
 
+        # scale the midi duration from 0.1 to 0.9 depending on the attack parameter
+        attack_value = parameter_values[ATTACK_INDEX]
+        midi_duration = scale_midi_duration_by_attack(attack_value)
+        assert midi_duration < 1, "midi_duration (how long the midi note is played for) must be less than 1 second"
+
+
         # iterate over the piano notes
         for piano_note in piano_notes:
             # convert the piano note to midi (0 to 127)
@@ -165,7 +203,7 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
             engine.load_graph([(loaded_preset_synth, [])])
 
             # loaded_preset_synth.open_editor()
-            engine.render(3) # use *1.2 to capture release/reverb
+            engine.render(3) # have to render audio for 3 seconds because of musicnn audio length requirement
             
             # render the audio
             audio = engine.get_audio()
@@ -524,15 +562,16 @@ def piano_note_to_midi_note(note_name):
     """
     # Define a dictionary that maps note names to their corresponding MIDI note numbers
     note_to_midi = {
-        "C0": 12, "C#0": 13, "Db0": 13, "D0": 14, "D#0": 15, "Eb0": 15, "E0": 16, "F0": 17, "F#0": 18, "Gb0": 18, "G0": 19, "G#0": 20, "Ab0": 20, "A0": 21, "A#0": 22, "Bb0": 22, "B0": 23,
-        "C1": 24, "C#1": 25, "Db1": 25, "D1": 26, "D#1": 27, "Eb1": 27, "E1": 28, "F1": 29, "F#1": 30, "Gb1": 30, "G1": 31, "G#1": 32, "Ab1": 32, "A1": 33, "A#1": 34, "Bb1": 34, "B1": 35,
-        "C2": 36, "C#2": 37, "Db2": 37, "D2": 38, "D#2": 39, "Eb2": 39, "E2": 40, "F2": 41, "F#2": 42, "Gb2": 42, "G2": 43, "G#2": 44, "Ab2": 44, "A2": 45, "A#2": 46, "Bb2": 46, "B2": 47,
-        "C3": 48, "C#3": 49, "Db3": 49, "D3": 50, "D#3": 51, "Eb3": 51, "E3": 52, "F3": 53, "F#3": 54, "Gb3": 54, "G3": 55, "G#3": 56, "Ab3": 56, "A3": 57, "A#3": 58, "Bb3": 58, "B3": 59,
-        "C4": 60, "C#4": 61, "Db4": 61, "D4": 62, "D#4": 63, "Eb4": 63, "E4": 64, "F4": 65, "F#4": 66, "Gb4": 66, "G4": 67, "G#4": 68, "Ab4": 68, "A4": 69, "A#4": 70, "Bb4": 70, "B4": 71,
-        "C5": 72, "C#5": 73, "Db5": 73, "D5": 74, "D#5": 75, "Eb5": 75, "E5": 76, "F5": 77, "F#5": 78, "Gb5": 78, "G5": 79, "G#5": 80, "Ab5": 80, "A5": 81, "A#5": 82, "Bb5": 82, "B5": 83, "C6": 84, "C#6": 85, "Db6": 85, "D6": 86, "D#6": 87, "Eb6": 87, "E6": 88, "F6": 89, "F#6": 90, "Gb6": 90, "G6": 91,
-        "G#6": 92, "Ab6": 92, "A6": 93, "A#6": 94, "Bb6": 94, "B6": 95, "C7": 96, "C#7": 97, "Db7": 97, "D7": 98, "D#7": 99, "Eb7": 99, "E7": 100, "F7": 101, "F#7": 102, "Gb7": 102, "G7": 103,
-        "G#7": 104, "Ab7": 104, "A7": 105, "A#7": 106, "Bb7": 106, "B7": 107, "C8": 108, "C#8": 109, "Db8": 109, "D8": 110, "D#8": 111, "Eb8": 111, "E8": 112, "F8": 113, "F#8": 114, "Gb8": 114, "G8": 115,
-        "G#8": 116, "Ab8": 116, "A8": 117, "A#8": 118, "Bb8": 118, "B8": 119, "C9": 120, "C#9": 121, "Db9": 121, "D9": 122, "D#9": 123, "Eb9": 123, "E9": 124, "F9": 125, "F#9": 126, "Gb9": 126, "G9": 127
+    'C-1': 12, 'C#-1': 13, 'D-1': 14, 'D#-1': 15, 'E-1': 16, 'F-1': 17, 'F#-1': 18, 'G-1': 19, 'G#-1': 20, 'A-1': 21, 'A#-1': 22, 'B-1': 23,
+    'C0': 24, 'C#0': 25, 'D0': 26, 'D#0': 27, 'E0': 28, 'F0': 29, 'F#0': 30, 'G0': 31, 'G#0': 32, 'A0': 33, 'A#0': 34, 'B0': 35,
+    'C1': 36, 'C#1': 37, 'D1': 38, 'D#1': 39, 'E1': 40, 'F1': 41, 'F#1': 42, 'G1': 43, 'G#1': 44, 'A1': 45, 'A#1': 46, 'B1': 47,
+    'C2': 48, 'C#2': 49, 'D2': 50, 'D#2': 51, 'E2': 52, 'F2': 53, 'F#2': 54, 'G2': 55, 'G#2': 56, 'A2': 57, 'A#2': 58, 'B2': 59,
+    'C3': 60, 'C#3': 61, 'D3': 62, 'D#3': 63, 'E3': 64, 'F3': 65, 'F#3': 66, 'G3': 67, 'G#3': 68, 'A3': 69, 'A#3': 70, 'B3': 71,
+    'C4': 72, 'C#4': 73, 'D4': 74, 'D#4': 75, 'E4': 76, 'F4': 77, 'F#4': 78, 'G4': 79, 'G#4': 80, 'A4': 81, 'A#4': 82, 'B4': 83,
+    'C5': 84, 'C#5': 85, 'D5': 86, 'D#5': 87, 'E5': 88, 'F5': 89, 'F#5': 90, 'G5': 91, 'G#5': 92, 'A5': 93, 'A#5': 94, 'B5': 95,
+    'C6': 96, 'C#6': 97, 'D6': 98, 'D#6': 99, 'E6': 100, 'F6': 101, 'F#6': 102, 'G6': 103, 'G#6': 104, 'A6': 105, 'A#6': 106, 'B6': 107,
+    'C7': 108, 'C#7': 109, 'D7': 110, 'D#7': 111, 'E7': 112, 'F7': 113, 'F#7': 114, 'G7': 115, 'G#7': 116, 'A7': 117, 'A#7': 118, 'B7': 119,
+    'C8': 120, 'C#8': 121, 'D8': 122, 'D#8': 123, 'E8': 124, 'F8': 125, 'F#8': 126, 'G8': 127
     }
 
     # Convert the input note_name to uppercase
@@ -749,6 +788,49 @@ def select_preset_path(folder_path, preset_ext):
                 preset_files.append(os.path.join(root, file))
     return random.choice(preset_files) if preset_files else None
 
+def wav2linearspec(signal: np.ndarray, sample_rate: int, plot_flag=False, window_size=2048, zero_padding_factor=1,
+                     window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000):
+    """
+    Convert a signal to a linear-scaled spectrogram.
+
+    Args:
+        signal (np.ndarray): The input signal as a NumPy array.
+        sample_rate (int): The sample rate of the input signal.
+        plot_flag (bool, optional): Whether to plot the linear-scaled spectrogram. Defaults to False.
+        window_size (int, optional): The size of the FFT window to use. Defaults to 2048.
+        zero_padding_factor (int, optional): The amount of zero-padding to use in the FFT. Defaults to 1.
+        window_type (str, optional): The type of window to use. Defaults to 'hann'.
+        gain_db (float, optional): The gain to apply to the spectrogram in decibels. Defaults to 0.0.
+        range_db (float, optional): The range of the spectrogram in decibels. Defaults to 80.0.
+        high_boost_db (float, optional): The amount of high-frequency boost to apply to the spectrogram in decibels.
+
+    Returns:
+        np.ndarray: The linear-scaled spectrogram as a NumPy array.
+    """
+
+    # Compute the spectrogram
+    spectrogram = librosa.stft(signal, n_fft=window_size * zero_padding_factor, hop_length=window_size,
+                                 window=window_type)
+    
+    # Convert the spectrogram to decibels
+    spectrogram_db = librosa.amplitude_to_db(np.abs(spectrogram), ref=np.max, top_db=range_db)
+
+    # Apply gain
+    spectrogram_db += gain_db
+
+    # Apply high-frequency boost
+    if high_boost_db > 0:
+        spectrogram_db[window_size // 2:, :] += high_boost_db
+    
+    # Plot the spectrogram
+    if plot_flag:
+        lbd.specshow(spectrogram_db, sr=sample_rate, hop_length=window_size, x_axis='time', y_axis='linear',
+                                 fmin=f_min, fmax=f_max)
+        plt.colorbar(format='%+2.0f dB')
+        plt.show()
+    
+    return spectrogram_db
+
 def wav2spec(signal: np.ndarray, sample_rate: int, plot_flag=False, window_size=2048, zero_padding_factor=1,
              window_type='hann', gain_db=0.0, range_db=80.0, high_boost_db=0.0, f_min=0, f_max=20000, n_mels=256):
     """
@@ -867,12 +949,11 @@ def audio2mel_spectrogram(audio_folder_path, plot_flag=False, window_size=2048, 
 
     return mel_spectrograms
 
-def get_western_scale(octaves,freq_low:str,freq_high:str):
+def get_western_scale(freq_low:str,freq_high:str):
     """
     This function returns a dictionary that contains the musical notes in the Western scale in the frequency range specified by freq_low and freq_high.
     
     Parameters:
-    octaves (int): the number of octaves in the Western scale
     freq_low (str): the lowest note in the frequency range, in the format "C0", "C#0", "D0", etc.
     freq_high (str): the highest note in the frequency range, in the format "C0", "C#0", "D0", etc.
     
@@ -882,27 +963,51 @@ def get_western_scale(octaves,freq_low:str,freq_high:str):
     # Define the list of musical notes in the Western scale
     notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     # Define the base frequency for A0
-    A0 = 27.5
+    C0 = 16.35
+
+    # Initialize L_freq and H_freq
+    L_freq = None
+    H_freq = float('inf')
+
     # Calculate the frequency of each note in the Western scale
     western_scale = {}
     for octave in range(8):
         for i, note in enumerate(notes):
             key = note + str(octave)
-            freq = A0 * 2**(i/12 + octave)
+            freq = C0 * 2**(i/12 + octave)
             if key == freq_low:
                 L_freq = freq
-            elif key == freq_high:
+            if key == freq_high:
                 H_freq = freq
-            if L_freq <= freq <= H_freq:
+            if L_freq is not None and freq <= H_freq:
                 western_scale[key] = freq
     return western_scale
 
-def get_fundamental_frequency(reference_signal,fs,freq_low:str='C1',freq_high:str='C5'):
+def get_closest_note_from_ff(ff):
+    """
+    Finds the closest note to the fundamental frequency from the list C2, C3, or C4.
+    """
+    idx = np.argmin(np.abs(np.array([65.41, 130.81, 261.63]) - ff))
+
+    if idx == 0:
+        return 'C2'
+    elif idx == 1:
+        return 'C3'
+    else:
+        return 'C4'
+
+def get_spec_mse(spec1, spec2):
+    """
+    Calculates the MSE between two spectrograms.
+    """
+    return np.mean((spec1 - spec2)**2)
+
+def get_fundamental_frequency(orig_signal,fs,freq_low:str='C2',freq_high:str='C5'):
     """
     This function computes the likely fundamental frequency of the input signal.
     
     Parameters:
-    reference_signal (ndarray): the input signal
+    orig_signal (ndarray): the input signal
     fs (float): the sample rate of the input signal, in Hz
     freq_low (str, optional): the lowest note in the frequency range to consider, in the format "C0", "C#0", "D0", etc. Default is "C1".
     freq_high (str, optional): the highest note in the frequency range to consider, in the format "C0", "C#0", "D0", etc. Default is "C5".
@@ -910,17 +1015,40 @@ def get_fundamental_frequency(reference_signal,fs,freq_low:str='C1',freq_high:st
     Returns:
     Tuple[str,float]: the likely fundamental frequency of the input signal, in the format ("C0", float), etc.
     """
+    # remove parts of the reference signal where there is no sound, within an absolute value tolerance
+    reference_signal = orig_signal[np.abs(orig_signal) > 0.01]
     n_samples = len(reference_signal)
     time = np.linspace(0,n_samples/fs,n_samples)
-    scale = get_western_scale(8,freq_low,freq_high)
-    freq_range = scale.values
-    note_range = scale.keys
-    sinusoid_specs = [spectrogram(np.sin(2*np.pi*f)) for f in freq_range]
-    ref_spec = spectrogram(reference_signal)
+    scale = get_western_scale(freq_low,freq_high)
+    freq_range = list(scale.values())
+    note_range = list(scale.keys())
+    # sinusoid_specs = [wav2linearspec(np.sin(2*np.pi*f*time),fs,window_size=4096) for f in freq_range]
+    ref_spec = wav2linearspec(reference_signal,fs,window_size=4096)
     # add normalization?
-    mse = mse(ref_spec,sinusoid_specs)
-    idx = np.argmin(mse)
+    # mse = []
+    # for sin_spec in sinusoid_specs:
+    #     mse.append(get_spec_mse(ref_spec,sin_spec))
+    smoothed = np.median(ref_spec,axis=1)
+    freqs = np.linspace(0,fs/2,smoothed.shape[0])
+    max_freq_idx = np.argmax(smoothed)
+    max_freq = freqs[max_freq_idx]
+    # find the closest frequency in freq_range to max_freq
+    idx = np.argmin(np.abs(np.array(freq_range) - max_freq))
     likely_note, likely_frequency = note_range[idx], freq_range[idx]
+    print(f'Likely note: {likely_note}, likely frequency: {likely_frequency}')
+    
+    # window_size = 1
+    # # smoothed = gaussian_filter1d(np.median(ref_spec,axis=1), sigma=window_size)
+    # smoothed = np.median(ref_spec,axis=1)
+
+    # # plot the first slice of the reference spectrogram as a spectrum, plot log frequency on x-axis
+    # plt.figure(figsize=(10, 4))
+    # plt.plot(np.log10(np.linspace(0,fs/2,smoothed.shape[0])),smoothed)
+    # plt.xlabel('Frequency (Hz)')
+    # plt.ylabel('Amplitude')
+    # plt.title('Reference spectrogram slice')
+    # plt.show()
+
     return likely_note, likely_frequency
 
 def find_fundamental_frequency(periodic_signal:np.ndarray,f_s:int) -> float:
