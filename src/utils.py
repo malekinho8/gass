@@ -18,6 +18,7 @@ import sounddevice as sd
 import pygad
 import plotly.graph_objs as go
 from IPython.display import Audio, display
+from src.config import note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping
 
 def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, ga_settings):
     # Load initial parameters from top preset
@@ -287,6 +288,9 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
             # convert the piano note to midi (0 to 127)
             midi_piano_note = piano_note_to_midi_note(piano_note)
 
+            # clear the midi notes
+            loaded_preset_synth.clear_midi()
+
             # generate a sound using the plugin (MIDI note, velocity, start sec, duration sec)
             loaded_preset_synth.add_midi_note(midi_piano_note, 127, 0.0, midi_duration)
 
@@ -363,21 +367,8 @@ def categorize_name(name):
     >>> categorize_name("PAD 1")
     "Synth Pads"
 
-    """
-    categories = {
-        "Synth Pads": ["PAD"],
-        "Bass": ["BAS", "Bass"],
-        "Leads": ["LED", "Lead"],
-        "Arpeggios": ["ARP", "Arp"],
-        "Pianos & Keyboards": ["PNO", "Piano", "KEY", "Keys", "KBD", "Celesta", "Clavinet", "Clavichord", "Harpsichord"],
-        "Strings": ["STR", "Strings", "Violine"],
-        "Organs": ["ORG", "Organ"],
-        "Brass & Woodwinds": ["BRS", "Brass", "Horn", "Trumpet", "WND", "Flute", "Oboe", "Clarinet", "English Horn"],
-        "Guitars": ["GTR", "Guitar"],
-        "Miscellaneous/Other": ["SFX", "DRM", "PRC", "SYN", "MFX", "MT", "The Difference", "FN", "FMR"],
-    }
-    
-    for category, keywords in categories.items():
+    """    
+    for category, keywords in tal_uno_categories.items():
         for keyword in keywords:
             if keyword in name:
                 return category
@@ -655,18 +646,6 @@ def piano_note_to_midi_note(note_name):
         int: The MIDI note number corresponding to the input piano note.
     """
     # Define a dictionary that maps note names to their corresponding MIDI note numbers
-    note_to_midi = {
-    'C-1': 12, 'C#-1': 13, 'D-1': 14, 'D#-1': 15, 'E-1': 16, 'F-1': 17, 'F#-1': 18, 'G-1': 19, 'G#-1': 20, 'A-1': 21, 'A#-1': 22, 'B-1': 23,
-    'C0': 24, 'C#0': 25, 'D0': 26, 'D#0': 27, 'E0': 28, 'F0': 29, 'F#0': 30, 'G0': 31, 'G#0': 32, 'A0': 33, 'A#0': 34, 'B0': 35,
-    'C1': 36, 'C#1': 37, 'D1': 38, 'D#1': 39, 'E1': 40, 'F1': 41, 'F#1': 42, 'G1': 43, 'G#1': 44, 'A1': 45, 'A#1': 46, 'B1': 47,
-    'C2': 48, 'C#2': 49, 'D2': 50, 'D#2': 51, 'E2': 52, 'F2': 53, 'F#2': 54, 'G2': 55, 'G#2': 56, 'A2': 57, 'A#2': 58, 'B2': 59,
-    'C3': 60, 'C#3': 61, 'D3': 62, 'D#3': 63, 'E3': 64, 'F3': 65, 'F#3': 66, 'G3': 67, 'G#3': 68, 'A3': 69, 'A#3': 70, 'B3': 71,
-    'C4': 72, 'C#4': 73, 'D4': 74, 'D#4': 75, 'E4': 76, 'F4': 77, 'F#4': 78, 'G4': 79, 'G#4': 80, 'A4': 81, 'A#4': 82, 'B4': 83,
-    'C5': 84, 'C#5': 85, 'D5': 86, 'D#5': 87, 'E5': 88, 'F5': 89, 'F#5': 90, 'G5': 91, 'G#5': 92, 'A5': 93, 'A#5': 94, 'B5': 95,
-    'C6': 96, 'C#6': 97, 'D6': 98, 'D#6': 99, 'E6': 100, 'F6': 101, 'F#6': 102, 'G6': 103, 'G#6': 104, 'A6': 105, 'A#6': 106, 'B6': 107,
-    'C7': 108, 'C#7': 109, 'D7': 110, 'D#7': 111, 'E7': 112, 'F7': 113, 'F#7': 114, 'G7': 115, 'G#7': 116, 'A7': 117, 'A#7': 118, 'B7': 119,
-    'C8': 120, 'C#8': 121, 'D8': 122, 'D#8': 123, 'E8': 124, 'F8': 125, 'F#8': 126, 'G8': 127
-    }
 
     # Convert the input note_name to uppercase
     note_name = note_name.upper()
@@ -765,102 +744,19 @@ def make_json_parameter_mapping(plugin, preset_path:str, verbose=True):
         # Iterate over each JSON key
         for key in json_keys:
             # specify the exceptions to map manually
-            key_mapping = {
-                "@path": None,  # No suitable match
-                "@programname": None,  # No suitable match
-                "@modulation": "modulation",
-                "@dcolfovalue": "dco lfo value",
-                "@dcopwmvalue": "dco pwm value",
-                "@dcopwmmode": "dco pwm mode",
-                "@dcopulseenabled": "dco pulse enabled",
-                "@dcosawenabled": "dco saw enabled",
-                "@dcosuboscenabled": "dco sub osc enabled",
-                "@dcosuboscvolume": "dco sub osc volume",
-                "@dconoisevolume": "dco noise volume",
-                "@hpfvalue": "dco hp filter",
-                "@filtercutoff": "filter cutoff",
-                "@filterresonance": "filter resonance",
-                "@filterenvelopemode": "filter env mode",
-                "@filterenvelopevalue": "filter env",
-                "@filtermodulationvalue": "filter modulation",
-                "@filterkeyboardvalue": "filter keyboard",
-                "@volume": "master volume",
-                "@masterfinetune": "master fine tune",
-                "@octavetranspose": "master octave transpose",
-                "@vcamode": "vca mode",
-                "@adsrattack": "attack",
-                "@adsrdecay": "decay",
-                "@adsrsustain": "sustain",
-                "@adsrrelease": "release",
-                "@lforate": "lfo rate",
-                "@lfodelaytime": "lfo delay",
-                "@lfotriggermode": "lfo trigger mode",
-                "@lfomanualtriggerenabled": "lfo trigger enabled",
-                "@lfomanualtriggeractive": "lfo trigger active",
-                "@lfowaveform": "lfo waveform",
-                "@chorus1enable": "chorus 1",
-                "@chorus2enable": "chorus 2",
-                "@arpenabled": "arp enabled",
-                "@arpsyncenabled": "arp sync enabled",
-                "@arpmode": "arp mode",
-                "@arprange": "arp range",
-                "@arprate": "arp rate",
-                "@arpnotloadsettings": "arp locked",
-                "@controlvelocityvolume": "control velocity volume",
-                "@controlvelocityenvelope": "control velocity envelope",
-                "@controlbenderfilter": "control pitch bend filter",
-                "@controlbenderdco": "control pitch bend dco",
-                "@portamentomode": "portamento mode",
-                "@portamentointensity": "portamento intensity",
-                "@midilearn": "midi learn",
-                "@panic": "panic",
-                "@voicehold": "voice hold",
-                "@miditriggerarp16sync": "trigger arp by midi channel 16",
-                "@midiclocksync": "clock sync",
-                "@hostsync": "host sync",
-                "@maxpoly": "max voices",
-                "@keytranspose": "keytranspose",
-                "@arpsyncmode": None,  # No suitable match
-                "@arpspecialmode": "special mode",
-                "@lfoinverted": "lfo inverted",
-                "@portamentopoly": "portamento poly",
-                "@engineoff": "sound engine off",
-                "@pitchwheel": "pitch wheel",
-                "@modulationwheel": "modulation wheel",
-                "@midiclear": "midi clear",
-                "@midilock": "midi lock",
-                "@mpeEnabled": "MPE enabled",
-                "@portamentotimeenabled": "portamento time",
-                "@reverbDryWet": "FX Reverb Dry / Wet",
-                "@reverbSize": "FX Reverb Size",
-                "@reverbDelay": "FX Reverb Delay",
-                "@reverbTone": "FX Reverb Tone",
-                "@delayDryWet": "FX Delay Dry / Wet",
-                "@delayTime": "FX Delay Time",
-                "@delaySync": "FX Delay Sync",
-                "@delaySpread": "FX Delay Spread",
-                "@delayTone": "FX Delay Tone",
-                "@delayFeedback": "FX Delay Feedback",
-                "@mtsEnabled": "MTS Microtuning Active",
-                "@unisonovoices": "Unisono Voices",
-                "@unisonodetune": "Unisono Detune",
-                "@unsionospread": "Unisono Spread",
-                "@voicemode": "Voice Mode",
-                "tuningtable": None,  # No suitable match
-                "voicetunings": None,  # No suitable match
-            }
+            try:
+                # get closest_match from exceptions list
+                closest_match = tal_uno_to_dawdreamer_mapping[key]
 
-            # get closest_match from exceptions list
-            closest_match = key_mapping[key]
-
-            if closest_match is not None:
-                # Extract the value of the JSON key from the JSON string using regex
-                match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
-                if match_value:
-                    param_value = float(match_value.group(1))
-                    index = param_name_to_index[closest_match]
-                    parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
-        
+                if closest_match is not None:
+                    # Extract the value of the JSON key from the JSON string using regex
+                    match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
+                    if match_value:
+                        param_value = float(match_value.group(1))
+                        index = param_name_to_index[closest_match]
+                        parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+            except KeyError:
+                print(f'Key {key} was not found in mapping dictionary. Continuing...')
         
         with open(output_name, 'w') as outfile:
             json.dump(parameter_mapping, outfile)  
