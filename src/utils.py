@@ -20,7 +20,57 @@ import plotly.graph_objs as go
 from IPython.display import Audio, display
 from src.config import note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping
 
+def load_synth_from_dataset(plugin, engine, top_preset_row):
+    """
+    This function initializes the DawDreamer engine with a specified sample rate,
+    loads a plugin into the engine, sets parameters on the plugin using values from 
+    a dataset row, and returns the plugin as a loaded synth.
+
+    Args:
+        plugin (object): The DawDreamer plugin to be loaded.
+        engine (object): The DawDreamer engine to be initialized.
+        top_preset_row (DataFrame row): The row of a DataFrame containing parameter values 
+                                        and their corresponding names to be set on the plugin.
+        target_sample_rate (int): The sample rate to be set on the engine.
+
+    Returns:
+        object: The plugin, now a loaded synth with parameters set from the dataset.
+    """
+    # Loop through parameters and set them in the synth
+    for i, parameter in enumerate(top_preset_row['parameters'].iloc[0]):
+        index = top_preset_row['mapped_parameter_names'].iloc[0][i]['index']
+        param_name = top_preset_row['mapped_parameter_names'].iloc[0][i]['match']
+        print(f'Param Name: {param_name}, Param Value: {parameter}')
+        plugin.set_parameter(index, parameter)
+    
+    # Return the plugin (now it's a loaded synth)
+    return plugin
+
+
 def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, ga_settings):
+    """
+    Optimizes synthesizer parameters using a genetic algorithm (GA) to match a target sound's MFCC features.
+
+    Parameters:
+    top_preset_path (str): Path to the preset with the best initial parameters.
+    plugin (Plugin): Plugin object related to the synthesizer settings.
+    engine (Engine): Engine object related to the synthesizer settings.
+    target_mfcc (numpy.ndarray): Target sound's Mel-frequency cepstral coefficients (MFCC) features.
+    ga_settings (dict): Dictionary containing GA settings. Expected keys are 'num_generations', 
+                        'num_parents_mating', 'sol_per_pop', 'crossover_type', 'mutation_type', 
+                        and 'mutation_percent_gene'.
+
+    Returns:
+    numpy.ndarray: The best solution found by the GA, i.e., the set of synthesizer parameters 
+                   that results in the sound closest to the target sound (according to the MFCC features).
+
+    The function uses the PyGAD library to run a GA where the fitness of each solution (set of synthesizer 
+    parameters) is determined by how close the sound it generates is to the target sound. The closeness 
+    is measured as the Euclidean distance between the MFCC features of the generated and target sounds.
+
+    The GA uses steady state selection for parent selection, uniform crossover, and random mutation. 
+    It keeps the best solution from each generation.
+    """
     # Load initial parameters from top preset
     initial_parameters = load_parameters(top_preset_path, plugin)
 
