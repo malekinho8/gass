@@ -11,15 +11,102 @@ import random
 import dawdreamer as daw
 import json
 import xmltodict
-import difflib
 import re
 import librosa
+import pandas as pd
 import sounddevice as sd
+import pygad
 import plotly.graph_objs as go
 from IPython.display import Audio, display
-from scipy.ndimage.filters import gaussian_filter1d
 
-ATTACK_INDEX = 22 # Known value for TAL-Uno Synth
+def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, ga_settings):
+    # Load initial parameters from top preset
+    initial_parameters = load_parameters(top_preset_path, plugin)
+
+    # Define the fitness function
+    def fitness_func(solution, solution_idx):
+        # Apply the solution to the synthesizer
+        set_parameters(plugin, engine, solution)
+
+        # Generate the sound and extract its MFCC features
+        current_mfcc = generate_mfcc(plugin, engine)
+
+        # Calculate the difference between the current and target MFCC
+        fitness = -np.linalg.norm(target_mfcc - current_mfcc)
+
+        return fitness
+
+    # Create a GA instance
+    ga_instance = pygad.GA(num_generations=ga_settings['num_generations'],
+                           num_parents_mating=ga_settings['num_parents_mating'],
+                           fitness_func=fitness_func,
+                           sol_per_pop=ga_settings['sol_per_pop'],
+                           num_genes=len(initial_parameters),
+                           init_range_low=0,
+                           init_range_high=1,
+                           parent_selection_type="sss",
+                           keep_parents=1,
+                           crossover_type=ga_settings['crossover_type'],
+                           mutation_type=ga_settings['mutation_type'],
+                           mutation_percent_genes=ga_settings['mutation_percent_gene'])
+
+    # Run the GA
+    ga_instance.run()
+
+    # Get the best solution
+    best_solution, best_solution_fitness = ga_instance.best_solution()
+
+    return best_solution
+
+def find_closest_preset_from_mfcc(target_audio, target_sr, dataset):
+    """
+    Given the path to a target audio file and a dataset of presets, this function finds and returns the names of the 
+    top 10 presets whose MFCCs are closest to that of the target audio.
+
+    The function calculates the MFCCs (Mel-Frequency Cepstral Coefficients) for the target audio and each audio in the 
+    preset dataset. It then uses the Euclidean distance to determine the similarity between the MFCCs of the target audio 
+    and each audio in the preset dataset. The presets corresponding to the top 10 closest MFCCs are returned.
+
+    Parameters:
+    target_audio (np.ndarray): The loaded target audio clip
+    target_sr (int): The sample rate of the target audio clip
+    dataset (pandas.DataFrame): The dataset of TAL-U-NO-LX presets.
+
+    Returns:
+    numpy.ndarray: An array containing the names of the top 10 presets that are the closest to the target audio file 
+                   based on the MFCC feature. The presets are sorted from closest to farthest.
+    """
+    # Find the Fundamental Frequency of the Target Audio
+    ff = get_fundamental_frequency(target_audio, target_sr)
+
+    # Find which of C2, C3, C4 the FF is Closest to
+    closest_note = get_closest_note_from_ff(ff[1])
+
+    # Define the comparison vectors
+    comparison_audio_set = np.stack(dataset['raw_audio'])
+    comparison_audio_set = np.stack([x[closest_note] for x in dataset['raw_audio']])
+
+    # Adapt the comparison audio set to the target audio if their lengths are not equal
+    if comparison_audio_set.shape[1] < target_audio.shape[0]:
+        comparison_audio_set = np.pad(comparison_audio_set, ((0, 0), (0, target_audio.shape[0] - comparison_audio_set.shape[1])), 'constant', constant_values=0)
+    elif comparison_audio_set.shape[1] > target_audio.shape[0]:
+        comparison_audio_set = comparison_audio_set[:, :target_audio.shape[0]]
+
+    # Evaluate MFCC Timbral Feature
+
+    # Define the comparison vectors
+    comparison_mfcc_set = np.stack([librosa.feature.mfcc(y=x, sr=44100) for x in comparison_audio_set])
+    comparison_mfcc_set = comparison_mfcc_set.reshape(comparison_mfcc_set.shape[0], -1)
+
+    # Find where the euclidean distance is the smallest
+    distances = np.linalg.norm(comparison_mfcc_set - librosa.feature.mfcc(y=target_audio, sr=target_sr).reshape(1, -1), axis=1)
+
+    # Find the top 10 closest presets
+    top_10 = np.argsort(distances)[:10]
+
+    # Return the preset names of the top 10 closest presets
+    return dataset.iloc[top_10]["preset_names"].values
+
 
 def get_cosine_similarity(vector_a, vector_b):
     # Calculate the dot product
@@ -34,9 +121,9 @@ def get_cosine_similarity(vector_a, vector_b):
 
     return similarity
 
-def scale_midi_duration_by_attack(attack_value,min_midi_duration=0.1,max_midi_duration=0.9):
+def scale_midi_duration_by_attack(attack_value,min_midi_duration=0.4,max_midi_duration=0.9):
     """
-    Scale the midi duration from 0.1 seconds to 0.9 seconds depending on the attack parameter.
+    Scale the midi duration from 0.4 seconds to 0.9 seconds depending on the attack parameter.
 
     Parameters
         min_midi_duration : float
@@ -186,8 +273,11 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
         # create a list to store the mapped parameter names
         preset_dataset['mapped_parameter_names'].append(parameter_mapped)
 
-        # scale the midi duration from 0.1 to 0.9 depending on the attack parameter
-        attack_value = parameter_values[ATTACK_INDEX]
+        # scale the midi duration from 0.4 to 0.9 depending on the attack parameter
+        # convert parameter_mapped, which is a list of dictionaries, to a list of strings corresponding to the key of 'match'
+        parameter_mapped_names = [x['match'] for x in parameter_mapped]
+        attack_idx = parameter_mapped_names.index('attack')
+        attack_value = parameter_values[attack_idx]
         midi_duration = scale_midi_duration_by_attack(attack_value)
         assert midi_duration < 1, "midi_duration (how long the midi note is played for) must be less than 1 second"
 
@@ -203,10 +293,14 @@ def create_muscinn_preset_dataset(preset_path:str,synth_plugin,synth_name,sample
             engine.load_graph([(loaded_preset_synth, [])])
 
             # loaded_preset_synth.open_editor()
-            engine.render(3) # have to render audio for 3 seconds because of musicnn audio length requirement
+            engine.render(1) # have to render audio for 3 seconds because of musicnn audio length requirement
             
             # render the audio
             audio = engine.get_audio()
+
+            # pad the audio with 2 seconds of the last value in audio to make it 3 seconds long. Note that audio has shape (2, n_samples)
+            padding = ((0, 0), (0, sample_rate*3 - audio.shape[1]))
+            audio = np.pad(audio, padding, 'constant', constant_values=(audio[-1, -1], audio[-1, -1]))            
 
             # save the file temporarily
             file_name = f'temp{piano_note}.wav'
@@ -555,7 +649,7 @@ def piano_note_to_midi_note(note_name):
     Convert a string representation of a piano note to its corresponding MIDI note number.
     
     Args:
-        piano_note (str): A string representation of a piano note (e.g. 'C4').
+        note_name (str): A string representation of a piano note (e.g. 'C4').
     
     Returns:
         int: The MIDI note number corresponding to the input piano note.
@@ -671,48 +765,101 @@ def make_json_parameter_mapping(plugin, preset_path:str, verbose=True):
         # Iterate over each JSON key
         for key in json_keys:
             # specify the exceptions to map manually
-            exceptions = {
-                'volume':'master volume', 
-                'octavetranspose':'master octave transpose',
-                'adsrdecay':'decay',
-                'adsrsustain':'sustain',
-                'adsrrelease':'release',
-                'chorus1enable':'chorus 1',
-                'chorus2enable':'chorus 2',
-                'midiclocksync':'clock sync',
-                'miditriggerarp16sync':'trigger arp by midi channel 16'
-                }
+            key_mapping = {
+                "@path": None,  # No suitable match
+                "@programname": None,  # No suitable match
+                "@modulation": "modulation",
+                "@dcolfovalue": "dco lfo value",
+                "@dcopwmvalue": "dco pwm value",
+                "@dcopwmmode": "dco pwm mode",
+                "@dcopulseenabled": "dco pulse enabled",
+                "@dcosawenabled": "dco saw enabled",
+                "@dcosuboscenabled": "dco sub osc enabled",
+                "@dcosuboscvolume": "dco sub osc volume",
+                "@dconoisevolume": "dco noise volume",
+                "@hpfvalue": "dco hp filter",
+                "@filtercutoff": "filter cutoff",
+                "@filterresonance": "filter resonance",
+                "@filterenvelopemode": "filter env mode",
+                "@filterenvelopevalue": "filter env",
+                "@filtermodulationvalue": "filter modulation",
+                "@filterkeyboardvalue": "filter keyboard",
+                "@volume": "master volume",
+                "@masterfinetune": "master fine tune",
+                "@octavetranspose": "master octave transpose",
+                "@vcamode": "vca mode",
+                "@adsrattack": "attack",
+                "@adsrdecay": "decay",
+                "@adsrsustain": "sustain",
+                "@adsrrelease": "release",
+                "@lforate": "lfo rate",
+                "@lfodelaytime": "lfo delay",
+                "@lfotriggermode": "lfo trigger mode",
+                "@lfomanualtriggerenabled": "lfo trigger enabled",
+                "@lfomanualtriggeractive": "lfo trigger active",
+                "@lfowaveform": "lfo waveform",
+                "@chorus1enable": "chorus 1",
+                "@chorus2enable": "chorus 2",
+                "@arpenabled": "arp enabled",
+                "@arpsyncenabled": "arp sync enabled",
+                "@arpmode": "arp mode",
+                "@arprange": "arp range",
+                "@arprate": "arp rate",
+                "@arpnotloadsettings": "arp locked",
+                "@controlvelocityvolume": "control velocity volume",
+                "@controlvelocityenvelope": "control velocity envelope",
+                "@controlbenderfilter": "control pitch bend filter",
+                "@controlbenderdco": "control pitch bend dco",
+                "@portamentomode": "portamento mode",
+                "@portamentointensity": "portamento intensity",
+                "@midilearn": "midi learn",
+                "@panic": "panic",
+                "@voicehold": "voice hold",
+                "@miditriggerarp16sync": "trigger arp by midi channel 16",
+                "@midiclocksync": "clock sync",
+                "@hostsync": "host sync",
+                "@maxpoly": "max voices",
+                "@keytranspose": "keytranspose",
+                "@arpsyncmode": None,  # No suitable match
+                "@arpspecialmode": "special mode",
+                "@lfoinverted": "lfo inverted",
+                "@portamentopoly": "portamento poly",
+                "@engineoff": "sound engine off",
+                "@pitchwheel": "pitch wheel",
+                "@modulationwheel": "modulation wheel",
+                "@midiclear": "midi clear",
+                "@midilock": "midi lock",
+                "@mpeEnabled": "MPE enabled",
+                "@portamentotimeenabled": "portamento time",
+                "@reverbDryWet": "FX Reverb Dry / Wet",
+                "@reverbSize": "FX Reverb Size",
+                "@reverbDelay": "FX Reverb Delay",
+                "@reverbTone": "FX Reverb Tone",
+                "@delayDryWet": "FX Delay Dry / Wet",
+                "@delayTime": "FX Delay Time",
+                "@delaySync": "FX Delay Sync",
+                "@delaySpread": "FX Delay Spread",
+                "@delayTone": "FX Delay Tone",
+                "@delayFeedback": "FX Delay Feedback",
+                "@mtsEnabled": "MTS Microtuning Active",
+                "@unisonovoices": "Unisono Voices",
+                "@unisonodetune": "Unisono Detune",
+                "@unsionospread": "Unisono Spread",
+                "@voicemode": "Voice Mode",
+                "tuningtable": None,  # No suitable match
+                "voicetunings": None,  # No suitable match
+            }
 
-            if key.split('@')[-1] not in exceptions: # find the closest match automatically           
-                # Find the closest match in the plugin parameter name list using max() and difflib.SequenceMatcher
-                closest_match = max(param_name_to_index.keys(), key=lambda param_name: difflib.SequenceMatcher(None, key, param_name).ratio())
+            # get closest_match from exceptions list
+            closest_match = key_mapping[key]
 
-                if key.split('@')[-1][0] == closest_match[0]: # only continue if the first letters are the same and specified exceptions
-                    if verbose:
-                        print(f'match found for {key}; closest match: {closest_match}')
-                    # Extract the value of the JSON key from the JSON string using regex
-                    match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
-                    if match_value:
-                        param_value = float(match_value.group(1))
-                        index = param_name_to_index[closest_match]
-                        parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
-                else:
-                    if verbose:
-                        print(f'no match found for {key}; closest match: {closest_match}')
-            else:
-                # map manually
-                key_temp = key.split('@')[-1]
-
-                # get closest_match from exceptions list
-                closest_match = exceptions[key_temp]
-
+            if closest_match is not None:
                 # Extract the value of the JSON key from the JSON string using regex
                 match_value = re.search(r'"{}":\s*"([\d.]+)"'.format(key), preset_settings)
                 if match_value:
                     param_value = float(match_value.group(1))
                     index = param_name_to_index[closest_match]
-
-                parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
+                    parameter_mapping[key] = {'match': closest_match, 'value': param_value, 'index': index}
         
         
         with open(output_name, 'w') as outfile:
