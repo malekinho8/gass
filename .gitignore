@@ -10,6 +10,9 @@ sandbox/
 TAL-UNO_json_presets/
 *.DS_Store
 *.pt
+*.wav
 dataset/*.pt
 dataset/*.png
 dataset/*.svg
+*Icon*
+*__pycache__*
