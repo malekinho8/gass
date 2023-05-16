@@ -18,7 +18,7 @@ import sounddevice as sd
 import pygad
 import plotly.graph_objs as go
 from IPython.display import Audio, display
-from src.config import note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping
+from src.config import note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping, tal_uno_to_dawdreamer_index_mapping
 
 def load_synth_from_dataset(plugin, engine, top_preset_row):
     """
@@ -38,16 +38,38 @@ def load_synth_from_dataset(plugin, engine, top_preset_row):
     """
     # Loop through parameters and set them in the synth
     for i, parameter in enumerate(top_preset_row['parameters'].iloc[0]):
-        index = top_preset_row['mapped_parameter_names'].iloc[0][i]['index']
-        param_name = top_preset_row['mapped_parameter_names'].iloc[0][i]['match']
+        index = top_preset_row['mapped_parameter_names'].iloc[0][i]['dawdreamer index']
+        mapped_param_value = top_preset_row['mapped_parameter_names'].iloc[0][i]['value']
+        assert mapped_param_value == parameter, f'Parameter value mismatch: {mapped_param_value} != {parameter}!'
+        param_name = top_preset_row['mapped_parameter_names'].iloc[0][i]['dawdreamer param name']
         print(f'Param Name: {param_name}, Param Value: {parameter}')
         plugin.set_parameter(index, parameter)
     
     # Return the plugin (now it's a loaded synth)
     return plugin
 
+def set_parameters(plugin, parameters):
+    """
+    This function sets parameters on a plugin using values from a dataset row.
 
-def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, ga_settings):
+    Args:
+        plugin (object): The DawDreamer plugin to be loaded.
+        parameters (list): A list of parameter values to be set on the plugin.
+
+    Returns:
+        object: The plugin, now a loaded synth with parameters set from the dataset.
+    """
+    # Loop through parameters and set them in the synth
+    for i, parameter in enumerate(parameters):
+        index = tal_uno_to_dawdreamer_index_mapping[i]
+        plugin.set_parameter(index, parameter)
+    
+    # Return the plugin (now it's a loaded synth)
+    return plugin
+
+
+
+def optimize_preset_with_ga_mfcc(top_preset_row, plugin, engine, target_mfcc, closest_note, ga_settings):
     """
     Optimizes synthesizer parameters using a genetic algorithm (GA) to match a target sound's MFCC features.
 
@@ -56,6 +78,7 @@ def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, g
     plugin (Plugin): Plugin object related to the synthesizer settings.
     engine (Engine): Engine object related to the synthesizer settings.
     target_mfcc (numpy.ndarray): Target sound's Mel-frequency cepstral coefficients (MFCC) features.
+    closest_note (str): The closest note to the target sound's pitch, i.e. "C4".
     ga_settings (dict): Dictionary containing GA settings. Expected keys are 'num_generations', 
                         'num_parents_mating', 'sol_per_pop', 'crossover_type', 'mutation_type', 
                         and 'mutation_percent_gene'.
@@ -72,15 +95,15 @@ def optimize_preset_with_ga_mfcc(top_preset_path, plugin, engine, target_mfcc, g
     It keeps the best solution from each generation.
     """
     # Load initial parameters from top preset
-    initial_parameters = load_parameters(top_preset_path, plugin)
+    initial_parameters = top_preset_row['parameters'].iloc[0]
 
     # Define the fitness function
     def fitness_func(solution, solution_idx):
         # Apply the solution to the synthesizer
-        set_parameters(plugin, engine, solution)
+        set_parameters(plugin, solution)
 
         # Generate the sound and extract its MFCC features
-        current_mfcc = generate_mfcc(plugin, engine)
+        current_mfcc = generate_mfcc(plugin, engine, closest_note,)
 
         # Calculate the difference between the current and target MFCC
         fitness = -np.linalg.norm(target_mfcc - current_mfcc)
