@@ -1,3 +1,12 @@
+daw_settings = {
+    'SAMPLE_RATE': 44100,
+    'BLOCK_SIZE': 128,
+    'SYNTH_PLUGIN_PATH': "/Library/Audio/Plug-Ins/VST3/TAL-U-NO-LX-V2.vst3",
+    'SYNTH_NAME': "TAL-Uno",
+    'PRESET_FOLDER': "/Users/malek8/Library/Application Support/ToguAudioLine/TAL-U-No-LX/presets",
+    'PRESET_EXT': ".pjunoxl"
+}
+
 ga_settings ={
     'num_generations': 100,
     'num_parents_mating': 10,
