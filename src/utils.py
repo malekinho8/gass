@@ -16,10 +16,11 @@ import librosa
 import pandas as pd
 import sounddevice as sd
 import pygad
+import time
 import plotly.graph_objs as go
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from IPython.display import Audio, display
-from src.config import daw_settings, note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping, tal_uno_to_dawdreamer_index_mapping, dawdreamer_param_name_to_tal_uno_index_mapping, fixed_parameters, NUM_TAL_UNO_PARAMETERS, NUM_MIDI_PARAMETERS
+from src.config import greedy_gradient_settings, SAVE_AUDIO, INITIAL_MIDI_DURATION, INITIAL_MIDI_VELOCITY, VERBOSITY, OBJECTIVE_FUNCTION, daw_settings, note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping, tal_uno_to_dawdreamer_index_mapping, dawdreamer_param_name_to_tal_uno_index_mapping, fixed_parameters, NUM_TAL_UNO_PARAMETERS, NUM_MIDI_PARAMETERS
 
 # set plt settings to use latex
 plt.rcParams.update({
@@ -29,8 +30,82 @@ plt.rcParams.update({
     "font.size": 12
 })
 
+def save_mfcc_history_comparison_plots(history, save_path):
+    for i, generation in enumerate(history['generation']):
+        # Create the figure and the two subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
 
-def load_synth_from_dataset(plugin, engine, top_preset_row, verbosity=0):
+        # generation fitness
+        generation_fitness = history['f(x)'][i]
+
+        # Add a title for the whole figure that contains the generation number and the fitness
+        fig.suptitle(f'Generation {generation} Best Fitness: {generation_fitness}')
+
+        # First subplot
+        im1 = ax1.imshow(history['target mfcc'], origin='lower', aspect='auto')
+        ax1.set_title('Target MFCC')
+        ax1.set_xlabel('Time (frames)')
+        ax1.set_ylabel('MFCC Coefficient')
+
+        # Second subplot
+        im2 = ax2.imshow(history['synth mfcc'][i], origin='lower', aspect='auto')
+        ax2.set_title('Best Solution MFCC')
+        ax2.set_xlabel('Time (frames)')
+        ax2.set_ylabel('MFCC Coefficient')
+
+        # Create an axes on the right side of ax2 for the colorbar
+        divider = make_axes_locatable(ax2)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+
+        # Add colorbar to the figure
+        fig.colorbar(im1, cax=cax)
+
+        plt.tight_layout()
+        
+        fig.savefig(f'{save_path}{os.sep}generation-{generation}.png')
+
+        plt.close()
+
+def make_parameter_with_fitness_plots(history, plot_flag=True, objective_function_type=OBJECTIVE_FUNCTION):
+    # get the proper indices
+    optimize_indices, fixed_indices = get_optimize_indices()
+
+    # specify the variable params
+    x_var = [x[np.array(optimize_indices.tolist() + [NUM_TAL_UNO_PARAMETERS, NUM_TAL_UNO_PARAMETERS + 1])] for x in history['x']]
+    
+    # Create subplots
+    fig, axes = plt.subplots(1,2,figsize=(16,8))
+    
+    # Plot for each dimension in the parameter vector
+    for d in range(len(x_var[0])):
+        axes[0].plot([x[d] for x in history['x']], label=f'x[{d}]')
+    
+    axes[0].set_xlabel('Generation')
+    axes[0].set_ylabel('Parameter Values')
+    axes[0].set_title('Parameter Values vs. Generation')
+        
+    # Set label for objective function based on type
+    if objective_function_type == 'MAE':
+        axes[1].plot(history['f(x)'], label='$f(x) = T(y) - T(\hat{y}(x))$')
+    elif objective_function_type == 'MSE':
+        axes[1].plot(history['f(x)'], label='$f(x) = \sum (T(y) - T(\hat{y}(x)))^2$')
+    
+    # Set labels for axes
+    axes[1].set_xlabel('Generation')
+    axes[1].set_ylabel('Objective Function Values')
+    axes[1].set_title('Objective Function Values vs. Generation')
+    
+    # Add legend and tight layout
+    plt.legend()
+    plt.tight_layout()
+    
+    # Show plots
+    if plot_flag:
+        plt.show()
+    
+    return fig
+
+def load_synth_from_dataset(plugin, engine, top_preset_row, verbosity=VERBOSITY):
     """
     This function initializes the DawDreamer engine with a specified sample rate,
     loads a plugin into the engine, sets parameters on the plugin using values from 
@@ -78,7 +153,7 @@ def set_parameters(plugin, parameters):
     # Return the plugin (now it's a loaded synth)
     return plugin
 
-def render_audio(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, mono=True, verbosity=0):
+def render_audio(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, mono=True, verbosity=VERBOSITY):
     """
     This function renders audio for a given MIDI note, using a loaded synthesizer and engine.
 
@@ -119,7 +194,7 @@ def render_audio(midi_piano_note, velocity, midi_duration, loaded_synth, engine,
 
     return audio
 
-def render_audio_and_generate_mfcc(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, verbosity=0, return_audio=False):
+def render_audio_and_generate_mfcc(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, verbosity=VERBOSITY, return_audio=False):
     """
     This function generates Mel-frequency cepstral coefficients (MFCCs) for a given MIDI note, using a loaded synthesizer and engine.
 
@@ -137,7 +212,7 @@ def render_audio_and_generate_mfcc(midi_piano_note, velocity, midi_duration, loa
         current_mfcc (np.array): The MFCCs of the generated audio.
     """
     # render the audio
-    audio = render_audio(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, verbosity=verbosity)
+    audio = render_audio(midi_piano_note, velocity, midi_duration, loaded_synth, engine, target_audio_length, target_sample_rate, verbosity=VERBOSITY)
 
     # Extract the MFCC features from the generated sound using librosa
     current_mfcc = librosa.feature.mfcc(y=audio, sr=target_sample_rate) # use default settings
@@ -172,10 +247,16 @@ def get_midi_durations(df_rows):
     
     return midi_durations
 
-def objective_func(current_mfcc, target_mfcc):
-    return np.linalg.norm(target_mfcc - current_mfcc, ord=1)
+def objective_func(current_mfcc, target_mfcc, type=OBJECTIVE_FUNCTION):
+    type = type.lower()
+    if type == 'mae':
+        return np.linalg.norm(target_mfcc - current_mfcc, ord=1)/len(target_mfcc) # mean absolute error (MAE)
+    elif type == 'mse':
+        return np.mean((target_mfcc - current_mfcc)**2) # mean squared error (MSE)
+    else:
+        raise ValueError(f'Invalid type: {type}')
 
-def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, verbosity=0):
+def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, verbosity=VERBOSITY):
     midi_piano_note = piano_note_to_midi_note(closest_note)
     midi_duration = get_midi_durations(top_preset_row)[0]
 
@@ -199,7 +280,7 @@ def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_l
             # Apply the solution to the synthesizer
             loaded_synth_temp = set_parameters(plugin, x_temp.numpy())
             # Generate the sound and extract its MFCC features
-            current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity, return_audio=True)
+            current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
             
             # write the audio to a wav file
             wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 'write wavs' else None
@@ -221,7 +302,7 @@ def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_l
         
     return plot_data
 
-def optimize_preset_with_greedy_gradient_mfcc(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, N_ITERATIONS=100, DX=0.001, learn_rate=0.001, verbosity=0):
+def optimize_preset_with_greedy_gradient_mfcc(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, N_ITERATIONS=greedy_gradient_settings['num_generations'], DX=greedy_gradient_settings['dx_size'], learn_rate=greedy_gradient_settings['learn_rate'], verbosity=VERBOSITY):
     """
     Optimizes synthesizer parameters using a greedy gradient to match a target sound's MFCC features.
 
@@ -242,68 +323,113 @@ def optimize_preset_with_greedy_gradient_mfcc(plugin, engine, target_mfcc, targe
         dict: The best solution found by the greedy gradient, i.e., the set of synthesizer parameters 
             that results in the sound closest to the target sound (according to the MFCC features).
     """
+    # specify the number of dimensions of the parameter
+    N_DIM = NUM_TAL_UNO_PARAMETERS + NUM_MIDI_PARAMETERS
 
+    # initialize the parameter vector
+    x = torch.zeros((N_DIM,))
+
+    # initialize x as the preset parameters
+    x[0:NUM_TAL_UNO_PARAMETERS] = torch.tensor(top_preset_row['parameters'].iloc[0])
+
+    # initialize the midi parameters
+    x[-NUM_MIDI_PARAMETERS::] = torch.tensor([INITIAL_MIDI_VELOCITY, INITIAL_MIDI_DURATION])
+
+    # specify the midi piano note
     midi_piano_note = piano_note_to_midi_note(closest_note)
-    midi_duration = get_midi_durations(top_preset_row)[0]
 
-    # Initialize x as the preset parameters
-    x = torch.tensor(top_preset_row['parameters'].iloc[0], requires_grad=False)
+    # get the indices of the parameters that are fixed and optimized
+    optimize_indices, fixed_indices = get_optimize_indices()    
 
-    N_DIM = len(x)  # the number of dimensions
+    # define midi indices
+    midi_indices = [NUM_TAL_UNO_PARAMETERS + 0, NUM_TAL_UNO_PARAMETERS + 1]
 
     # Initialize the history dictionary
-    history = {'coordinates': [], 'value': []}
+    history = {'x': [], 'f(x)': [],'target mfcc': target_mfcc.reshape(20,87), 'synth mfcc':[], 'elapsed time': None, 'generation':[]}
 
     # Initialize the x differential step
-    dx = torch.zeros((N_DIM,), requires_grad=False) + DX
+    num_variable_params = len(optimize_indices) + NUM_MIDI_PARAMETERS
+
+    # begin the timer
+    start_time = time.time()
 
     # Optimization loop
     for i in range(N_ITERATIONS):
+        # specify the synth params
+        synth_params = x[0:NUM_TAL_UNO_PARAMETERS]
+
+        # specify the midi parameters
+        midi_params = x[-NUM_MIDI_PARAMETERS::]
+
+        # convert MIDI parameters to their corresponding values
+        midi_duration = midi_duration_float_to_sec(midi_params[1])
+        midi_velocity = midi_velocity_float_to_int(midi_params[0])
+
         # Apply the solution to the synthesizer
-        loaded_synth = set_parameters(plugin, x.numpy())
+        loaded_synth = set_parameters(plugin, synth_params.numpy())
         
         # Generate the sound and extract its MFCC features
-        current_mfcc, audio_old = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity, return_audio=True)
+        current_mfcc, audio_old = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
         
         # write the audio to a wav file
-        wavfile.write(f'audio_old.wav', daw_settings['SAMPLE_RATE'], audio_old) if verbosity == 'write wavs' else None
+        wavfile.write(f'audio_old.wav', daw_settings['SAMPLE_RATE'], audio_old) if verbosity == 4 else None
 
         # compute the function value at the current point
         objective = objective_func(current_mfcc, target_mfcc)
 
-        # compute the pseudo-gradient
-        grad = []
-        for i in range(len(dx)):
-            x_temp = x.clone()
-            x_temp[i] += dx[i] # nudge the ith parameter a bit
-            # Apply the solution to the synthesizer
-            loaded_synth_temp = set_parameters(plugin, x_temp.numpy())
-            # Generate the sound and extract its MFCC features
-            current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity, return_audio=True)
-            
-            # write the audio to a wav file
-            wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 'write wavs' else None
+        history['f(x)'].append(objective.item())
+        history['x'].append(x.numpy())
+        history['generation'].append(i + 1)
+        history['synth mfcc'].append(current_mfcc)
 
-            grad.append(objective_func(current_mfcc_temp, target_mfcc) - objective) # compute the gradient
-        
-        deltax = -learn_rate * torch.tensor(grad[-1]) * dx
+        # print the current generation number, objective function value
+        print(f'Generation {i+1} Started. Current Objective function value: {objective}...') if verbosity >= 1 else None
+
+        # compute the black box gradient
+        grad = []
+        for i in range(N_DIM):
+            if i not in fixed_indices:
+                x_temp = x.clone()
+                x_temp[i] += DX # nudge the ith parameter a bit
+
+                # Apply the solution to the synthesizer
+                loaded_synth_temp = set_parameters(plugin, x_temp[0:NUM_TAL_UNO_PARAMETERS].numpy())
+
+                # define the midi velocity and duration
+                midi_duration = midi_duration_float_to_sec(x_temp[-1])
+                midi_velocity = midi_velocity_float_to_int(x_temp[-2])
+
+                # Generate the sound and extract its MFCC features
+                current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
+                
+                # write the audio to a wav file
+                wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 4 else None
+
+                grad.append(objective_func(current_mfcc_temp, target_mfcc) - objective) # compute the gradient
+            else:
+                grad.append(0)
+            
+        # compute the gradient step
+        deltax = -learn_rate * torch.tensor(grad) * DX
+
+        # clip the gradient
+        deltax = gradient_clip(deltax, magnitude=1)
         
         x += deltax # take a step in the good direction!
-    
-        history['value'].append(objective.item())
-        history['coordinates'].append(x.numpy())
 
-    # compute the fitness of the best solution
-    fitness = 1/history['value'][-1]
+        # clip the parameters
+        x = torch.clamp(x, 0, 1)    
     
-    output = {
-        'x_star': x.numpy(),
-        'x_star_fitness': fitness,
-        'x_star_objective': history['value'][-1],
-        'history': history
-    }
+    # end the timer
+    end_time = time.time()
+
+    # compute the elapsed time
+    elapsed_time = end_time - start_time
+
+    # store the elapsed time
+    history['elapsed time'] = elapsed_time
     
-    return output
+    return history
 
 def gradient_clip(delta,magnitude):
     """
@@ -318,7 +444,7 @@ def gradient_clip(delta,magnitude):
     return delta
 
 
-def optimize_preset_with_rfd_mfcc(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, N_ITERATIONS=100, DX=0.0001, verbosity=0):
+def optimize_preset_with_rfd_mfcc(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, N_ITERATIONS=100, DX=0.0001, verbosity=VERBOSITY):
     """
     Optimizes synthesizer parameters using a random finite difference (RFD) to match a target sound's MFCC features.
 
@@ -346,6 +472,9 @@ def optimize_preset_with_rfd_mfcc(plugin, engine, target_mfcc, target_audio_leng
 
     # Initialize x as the preset parameters
     x[0:NUM_TAL_UNO_PARAMETERS] = np.array(top_preset_row['parameters'].iloc[0])
+
+    # initialize the midi parameters
+    x[-NUM_MIDI_PARAMETERS::] = np.array([INITIAL_MIDI_VELOCITY, INITIAL_MIDI_DURATION])
 
     # create a copy of x
     x_init = x.copy()
@@ -379,7 +508,7 @@ def optimize_preset_with_rfd_mfcc(plugin, engine, target_mfcc, target_audio_leng
         loaded_synth = set_parameters(plugin, synth_params)
 
         # Generate the sound and extract its MFCC features
-        current_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity)
+        current_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY)
 
         # Compute initial f(x)
         f_start = objective_func(current_mfcc, target_mfcc)
@@ -422,7 +551,7 @@ def optimize_preset_with_rfd_mfcc(plugin, engine, target_mfcc, target_audio_leng
         loaded_synth_dx = set_parameters(plugin, new_synth_params)
 
         # Generate the sound and extract its MFCC features
-        current_mfcc_dx = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth_dx, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity)
+        current_mfcc_dx = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth_dx, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY)
 
         # Compute new f(x)
         f_new = objective_func(current_mfcc_dx, target_mfcc) 
@@ -476,7 +605,7 @@ def midi_velocity_float_to_int(midi_velocity_float):
     midi_velocity = int(midi_velocity_float * 67 + 60)
     return midi_velocity
 
-def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, ga_settings, verbosity=0):
+def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, ga_settings, verbosity=VERBOSITY):
     """
     Optimizes synthesizer parameters using a genetic algorithm (GA) to match a target sound's MFCC features.
 
@@ -504,8 +633,11 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     The GA uses steady state selection for parent selection, uniform crossover, and random mutation. 
     It keeps the best solution from each generation.
     """
+    # print the ga_settings dictionary as a check
+    print(f'\n\n\n GA SETTINGS: \n\n {ga_settings}') if verbosity >= 1 else None
+
     # Load initial parameters from top preset
-    if ga_settings['random_flag'] == False:
+    if ga_settings['use_initial_population'] == True:
         initial_parameters = [row['parameters'] for i, row in top10_preset_rows.iterrows()] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
     else:
         initial_parameters = [np.random.uniform(0, 1, len(list(dawdreamer_param_name_to_tal_uno_index_mapping.keys()))) for i in range(ga_settings['sol_per_pop'])] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
@@ -524,7 +656,7 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     initial_parameters = [np.array(param_vector)[optimize_indices] for param_vector in initial_parameters]
 
     # add midi note and duration to the initial parameters
-    initial_parameters = [np.append(param_vector, [0, 0]) for param_vector in initial_parameters]
+    initial_parameters = [np.append(param_vector, [INITIAL_MIDI_VELOCITY, INITIAL_MIDI_DURATION]) for param_vector in initial_parameters]
 
     # check the shape of one of the initial parameters
     print(f'initial_parameters[0] shape: {initial_parameters[0].shape}') if verbosity == 0.5 else None
@@ -535,17 +667,29 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     # Generate the sound and extract its MFCC features
     midi_piano_note = piano_note_to_midi_note(closest_note)
 
-    # Determine the midi duration based on the attack time of the target sound
-    midi_durations = get_midi_durations(top10_preset_rows)
-
     # get the midi duration by converting
     midi_duration = midi_duration_float_to_sec(0)
 
     # get the midi velocity by converting
     midi_velocity = midi_velocity_float_to_int(0)
+    
+    # make initial_best_params a global variable so it can be accessed by the on_generation callback
+    global initial_best_params
+
+    # specify the initial best parameters
+    initial_best_params = top10_preset_rows.iloc[0]['parameters']
+
+    # obtain the name of the top preset
+    top_preset_name = top10_preset_rows.iloc[0]['preset_names']
+
+    # load the best preset to the synthesizer plugin
+    loaded_synth = set_parameters(plugin, initial_best_params)
+
+    # print the name of the top preset
+    print(f'top preset name: {top_preset_name}') if verbosity >= 1 else None
 
     # get the starting mfcc to calculate the starting fitness
-    initial_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, plugin, engine, target_audio_length, daw_settings['SAMPLE_RATE'])
+    initial_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'])
 
     # calculate the initial fitness
     initial_fitness = -objective_func(initial_mfcc, target_mfcc)
@@ -557,35 +701,84 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     test_mfcc = 0
 
     # Define callback function for each generation
-    fitness_history = []
-    best_solutions = {}
-    def on_generation(ga_instance):
+    plot_history = {'x':[], 'f(x)':[], 'mean f(x)':[], 'synth mfcc':[], 'target mfcc': None, 'generation':[], 'synth params':[], 'generation time':[]}
+    def on_generation(ga_instance):      
+        # specify the generation number
+        generation_number = ga_instance.generations_completed
+
+        # append to plot_history
+        plot_history['generation'].append(generation_number)
+
         # Define the fitness values
         fitness_vals = ga_instance.last_generation_fitness
 
         # print shape of fitness_vals
-        print(f'fitness_vals.shape: {fitness_vals.shape}') if verbosity >= 0.5 else None
-
-        # Append the fitness values to the fitness history
-        fitness_history.append(fitness_vals)
+        print(f'fitness_vals.shape: {fitness_vals.shape}') if verbosity == 0.5 else None
     
         # Calculating the mean fitness
         mean_fitness = np.mean(fitness_vals)
 
+        # Append to mean f(x)
+        plot_history['mean f(x)'].append(-mean_fitness)
+
         # Get the best solution
-        best_solution_params, best_solution_fit, best_match_idx = ga_instance.best_solution()
+        best_solution_params = ga_instance.best_solution(ga_instance.last_generation_fitness)[0]
+        best_solution_fit = ga_instance.best_solution(ga_instance.last_generation_fitness)[1]
+        best_match_idx = ga_instance.best_solution(ga_instance.last_generation_fitness)[2]
+
+        print(f'best_solution_params.shape: {best_solution_params.shape}') if verbosity == 1 else None
+
+        # Append to f(x)
+        plot_history['f(x)'].append(-best_solution_fit)
 
         print(f'Generation = {ga_instance.generations_completed}, Best Fitness = {best_solution_fit}, Mean Fitness = {mean_fitness}') if verbosity >= 0.5 else None
 
+        # obtain the midi duration for this solution
+        midi_params = best_solution_params[-2::]
+
+        # convert the midi from 0 to 1 to integer value
+        midi_duration = midi_duration_float_to_sec(midi_params[1])
+        midi_velocity = midi_velocity_float_to_int(midi_params[0])
+
+        # create the parameter vector based on
+        synth_params = np.zeros((NUM_TAL_UNO_PARAMETERS,))
+
+        # Create the full solution, combining the fixed and variable parameters
+        synth_params[optimize_indices] = best_solution_params[:-2]
+        synth_params[fixed_indices] = fixed_parameters[best_match_idx]
         # apply the best solution to the synthesizer
-        loaded_synth = set_parameters(plugin, best_solution_params)
+        loaded_synth = set_parameters(plugin, synth_params)
 
         # Generate the sound and extract its MFCC features
-        test_mfcc = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_durations[best_match_idx], loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity)
+        test_mfcc, test_audio = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
 
+        # save the audio to an mp3
+        if SAVE_AUDIO:
+            if not os.path.exists('./audio'):
+                os.mkdir('./audio')
+            wavfile.write(f'./audio/synth_gen:{generation_number}.mp3', daw_settings['SAMPLE_RATE'], test_audio)
+
+        # calculate the fitness of the best solution
+        test_fitness = -objective_func(test_mfcc, target_mfcc)
+
+        # append the full x vector to plot history
+        plot_history['x'].append(np.concatenate((synth_params,midi_params)))
+
+        # append test mfcc and target mfcc to plot history
+        plot_history['synth mfcc'].append(test_mfcc.reshape(20,87))
+        plot_history['target mfcc'] = target_mfcc.reshape(20,87)
+
+        # append the synth params to plot history
+        plot_history['synth params'].append(synth_params)
+
+        # print the fitness of the best solution
+        print(f'test_fitness: {test_fitness}') if verbosity >= 3 else None
         if verbosity == 3:
             # Create the figure and the two subplots
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
+
+            # Add a title for the whole figure that contains the generation number and the fitness
+            fig.suptitle(f'Generation {generation_number} Best Fitness: {test_fitness}')
 
             # First subplot
             im1 = ax1.imshow(target_mfcc.reshape(20,87), origin='lower', aspect='auto')
@@ -605,8 +798,6 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
             plt.tight_layout()
             plt.show()
         
-        best_solutions[f'gen {ga_instance.generations_completed - 1} mfcc'] = test_mfcc 
-
     # Define the fitness function
     def fitness_func(self, solution, solution_idx):
         # obtain the midi duration for this solution
@@ -634,29 +825,20 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
         loaded_synth = set_parameters(plugin, synth_params)
         
         # Generate the sound and extract its MFCC features (the arguments below in order: midi note, velocity, midi duration, loaded synth, engine, target audio length, target sample rate)
-        current_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=verbosity)
-
-        # check the shape of the MFCC features
-        print(f'Current MFCC shape: {current_mfcc.shape}, Target MFCC shape: {target_mfcc.shape}') if verbosity >= 2 else None
+        current_mfcc, audio = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)        
 
         # Calculate the difference between the current and target MFCC
         fitness = -objective_func(current_mfcc, target_mfcc)
 
-        # append the best solution
-        # if ga_instance.generations_completed == 0 or fitness > ga_instance.best_solution()[1]:
-        #     best_solutions.append(current_mfcc)
+        # check the shape of the MFCC features
+        print(f'Current MFCC shape: {current_mfcc.shape}, Target MFCC shape: {target_mfcc.shape}, Fitness: {fitness}') if verbosity >= 2 else None
 
         return fitness
-    
-    # def fitness_func(self, solution, solution_idx):
-    #     # Simply sum the parameters in the solution
-    #     fitness = np.sum(solution)
-    #     print(f'Call Happened. Fitness: {fitness}') if verbosity == 0.5 else None
-    #     return fitness
 
     # Create a GA instance
     ga_instance = pygad.GA(num_generations=ga_settings['num_generations'],
                            num_parents_mating=ga_settings['num_parents_mating'],
+                           sol_per_pop=ga_settings['sol_per_pop'],
                            fitness_func=fitness_func,
                            mutation_by_replacement=ga_settings['mutation_by_replacement'],
                            random_mutation_min_val=ga_settings['random_mutation_min_val'],
@@ -667,13 +849,19 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
                            init_range_low=0,
                            init_range_high=1,
                            parent_selection_type="sss",
-                           keep_parents=1,
+                           keep_elitism=int(ga_settings['elitism_percent']/100*ga_settings['sol_per_pop']),
                            crossover_type=ga_settings['crossover_type'],
+                           crossover_probability=ga_settings['crossover_probability'],
                            on_generation=on_generation
                            )
 
     # Run the GA
+    start_time = time.time()
     ga_instance.run()
+    elapsed_time = time.time() - start_time
+
+    # add the elapsed time variable to the plot history dictionary
+    plot_history['elapsed min'] = elapsed_time / 60
 
     # Get the best solution
     best_solution, best_solution_fitness, best_match_idx = ga_instance.best_solution()
@@ -682,12 +870,12 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
         'best_solution': best_solution,
         'best_solution_fitness': best_solution_fitness,
         'best_match_idx': best_match_idx,
-        'fitness_history': fitness_history,
+        'plot_history': plot_history,
     }
 
     return output
 
-def find_closest_preset_from_mfcc(target_audio, target_sr, dataset, num_presets=10, return_note=False):
+def find_closest_preset_from_mfcc(target_audio, target_sr, dataset, num_presets=10, return_note=False, verbosity=VERBOSITY):
     """
     Given the path to a target audio file and a dataset of presets, this function finds and returns the names of the 
     top n presets whose MFCCs are closest to that of the target audio.
@@ -712,7 +900,6 @@ def find_closest_preset_from_mfcc(target_audio, target_sr, dataset, num_presets=
     closest_note = get_closest_note_from_ff(ff[1])
 
     # Define the comparison vectors
-    comparison_audio_set = np.stack(dataset['raw_audio'])
     comparison_audio_set = np.stack([x[closest_note] for x in dataset['raw_audio']])
 
     # Adapt the comparison audio set to the target audio if their lengths are not equal
@@ -724,14 +911,19 @@ def find_closest_preset_from_mfcc(target_audio, target_sr, dataset, num_presets=
     # Evaluate MFCC Timbral Feature
 
     # Define the comparison vectors
-    comparison_mfcc_set = np.stack([librosa.feature.mfcc(y=x, sr=daw_settings['SAMPLE_RATE']) for x in comparison_audio_set])
-    comparison_mfcc_set = comparison_mfcc_set.reshape(comparison_mfcc_set.shape[0], -1)
+    comparison_mfcc_set = np.stack([librosa.feature.mfcc(y=x, sr=daw_settings['SAMPLE_RATE']).reshape(-1) for x in comparison_audio_set])
+
+    # Define the target mfcc
+    target_mfcc = librosa.feature.mfcc(y=target_audio, sr=target_sr).reshape(-1)
 
     # Find where the euclidean distance is the smallest
-    distances = np.linalg.norm(comparison_mfcc_set - librosa.feature.mfcc(y=target_audio, sr=target_sr).reshape(1, -1), axis=1)
+    distances = [objective_func(current_mfcc, target_mfcc) for current_mfcc in comparison_mfcc_set]
 
     # Find the top 10 closest presets
     top_n = np.argsort(distances)[:num_presets]
+
+    # print the best distance achieved
+    print(f'Best Distance Achieved: {distances[top_n[0]]}') if verbosity >= 1 else None
 
     # Return the preset names of the top 10 closest presets
     return dataset.iloc[top_n]["preset_names"].values if not return_note else (dataset.iloc[top_n]["preset_names"].values, ff[0])

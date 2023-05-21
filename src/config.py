@@ -1,5 +1,10 @@
 NUM_TAL_UNO_PARAMETERS = 77
 NUM_MIDI_PARAMETERS = 2
+OBJECTIVE_FUNCTION = 'MSE'
+VERBOSITY = 1
+INITIAL_MIDI_DURATION = 0.5 # in terms of 0 to 1
+INITIAL_MIDI_VELOCITY = 1 # in terms of 0 to 1
+SAVE_AUDIO = True
 
 daw_settings = {
     'SAMPLE_RATE': 44100,
@@ -11,17 +16,25 @@ daw_settings = {
 }
 
 ga_settings ={
-    'num_generations': 100,
+    'num_generations': 1000,
     'num_parents_mating': 100,
     'sol_per_pop': 100,
     'crossover_type':'uniform',
+    'crossover_probability':0.5,
     'mutation_type':'random',
     'mutation_percent_gene':10,
-    'mutation_rate':0.2,
+    'mutation_rate':0.05,
     'mutation_by_replacement':True,
     'random_mutation_min_val':0,
     'random_mutation_max_val':1,
-    'random_flag':True,
+    'use_initial_population':True,
+    'elitism_percent':10,
+}
+
+greedy_gradient_settings = {
+    'num_generations': 1000,
+    'dx_size': 0.01,
+    'learn_rate': 0.001,
 }
 
 note_to_midi = {

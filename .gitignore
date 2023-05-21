@@ -16,3 +16,5 @@ dataset/*.png
 dataset/*.svg
 *Icon*
 *__pycache__*
+
+audio/*
