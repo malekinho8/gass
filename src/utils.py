@@ -17,10 +17,11 @@ import pandas as pd
 import sounddevice as sd
 import pygad
 import time
+import xml.etree.ElementTree as ET
 import plotly.graph_objs as go
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from IPython.display import Audio, display
-from src.config import greedy_gradient_settings, SAVE_AUDIO, INITIAL_MIDI_DURATION, INITIAL_MIDI_VELOCITY, VERBOSITY, OBJECTIVE_FUNCTION, daw_settings, note_to_midi, tal_uno_categories, tal_uno_to_dawdreamer_mapping, tal_uno_to_dawdreamer_index_mapping, dawdreamer_param_name_to_tal_uno_index_mapping, fixed_parameters, NUM_TAL_UNO_PARAMETERS, NUM_MIDI_PARAMETERS
+from src.config import *
 
 # set plt settings to use latex
 plt.rcParams.update({
@@ -30,8 +31,72 @@ plt.rcParams.update({
     "font.size": 12
 })
 
+def save_params_to_pjunoxl(history, synth_name, preset_folder=daw_settings['PRESET_FOLDER']):
+    """
+    This function takes a history object containing synth parameters and objective function values,
+    and a user-provided synth name. It finds the synth configuration with the best fitness score,
+    modifies a preset XML file using these parameters, and saves it.
+
+    Args:
+        history (torch.Tensor): A history object containing 'x' (synth params) and 'f(x)' (objective function values).
+        synth_name (str): A user-provided name for the synth.
+        preset_folder (str, optional): The path of the folder to save the preset to. 
+                                        Defaults to daw_settings['PRESET_FOLDER'].
+
+    Returns:
+        None. Prints a message indicating success or failure of the save operation.
+    """
+    # Check the length of the mapping
+    assert len(dawdreamer_param_name_to_xml_key_mapping) == NUM_TAL_UNO_PARAMETERS, f"The length of dawdreamer_param_name_to_xml_key_mapping {len(dawdreamer_param_name_to_xml_key_mapping)} is not equal to the NUM_TAL_UNO_PARAMETERS ({NUM_TAL_UNO_PARAMETERS})!"
+
+    # Find the best synth configuration
+    best_fitness_index = np.argmin(history['f(x)'])
+    synth_parameter_vector = history['x'][best_fitness_index][0:NUM_TAL_UNO_PARAMETERS]
+
+    # Set the preset filename
+    preset_filename = f'{synth_name}.pjunoxl'
+    preset_folder_path = os.path.join(preset_folder, 'ml-presets')
+    os.makedirs(preset_folder_path, exist_ok=True)
+
+    # Define preset path
+    preset_path = os.path.join(preset_folder_path, preset_filename)
+    dd_param_names = list(dawdreamer_param_name_to_tal_uno_index_mapping.keys())
+
+    # Load and parse the default preset
+    default_preset_path = os.path.join(preset_folder, 'Default.pjunoxl')
+    with open(default_preset_path, 'r') as f:
+        default_preset_string = f.read()
+    root = ET.fromstring(default_preset_string)
+
+    # Modify the preset
+    programs = root.find('programs')
+    program = programs.find('program')
+    program.set('path', preset_path)
+    program.set('programname', preset_filename.split('.')[0])
+
+    for i in range(NUM_TAL_UNO_PARAMETERS):
+        param_name = dd_param_names[i]
+        param_value = synth_parameter_vector[i]
+        xml_key = dawdreamer_param_name_to_xml_key_mapping[param_name]
+        if xml_key in program.attrib:
+            program.set(xml_key, str(param_value))
+        else:
+            raise ValueError(f"xml_key {xml_key} not found in program.attrib!")
+
+    # Save the preset
+    try:
+        new_tree = ET.ElementTree(root)
+        new_tree.write(preset_path)
+        print("Preset file saved successfully!")
+    except Exception as e:
+        print(f"Failed to save preset file. Error: {e}")
+
+    return None
+
 def save_mfcc_history_comparison_plots(history, save_path):
     for i, generation in enumerate(history['generation']):
+        if i % 10 != 0:
+            continue # this will only plot every 25 generations
         # Create the figure and the two subplots
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
 
@@ -256,6 +321,87 @@ def objective_func(current_mfcc, target_mfcc, type=OBJECTIVE_FUNCTION):
     else:
         raise ValueError(f'Invalid type: {type}')
 
+def obtain_parameter_objective_space_video_data(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, master_parameter_name, verbosity=VERBOSITY):
+    # obtain the tal uno index of the master parameter
+    master_parameter_index = dawdreamer_param_name_to_tal_uno_index_mapping[master_parameter_name]
+    
+    # define the closest midi note from the closest note obtained previously
+    midi_piano_note = piano_note_to_midi_note(closest_note)
+
+    # Initialize x as the preset parameters
+    x_init = torch.tensor(top_preset_row['parameters'].iloc[0], requires_grad=False)
+
+    # add midi parameters to the x_init tensor
+    x_init = torch.cat((x_init, torch.tensor([INITIAL_MIDI_VELOCITY,INITIAL_MIDI_DURATION])), dim=0)
+
+    # create a clone for future use
+    x = x_init.clone()
+
+    # get the optimized and fixed indices for the Tal Uno
+    optimize_indices, fixed_indices = get_optimize_indices()
+
+    # create the master_param_range
+    master_param_range = np.linspace(0,1,50)
+
+    # create a linspace vector that spans from 0 to 1 with a step size of 0.001
+    param_range = np.linspace(0,1,100)
+
+    # create a master list to store the plot_data from each iteration
+    master_plot_data = {
+        'master param name':master_parameter_name,
+        'video frames': [],             
+    }
+    for j, matser_param_value in enumerate(master_param_range):
+        plot_data = []
+        c = 0
+        print(f'------------ MASTER PARAM ITERATION {j} STARTED -----------\n\n')
+        for i in range(len(x)):
+            x_temp = x_init.clone()
+            temp_out = {
+                'param_name': None, # placeholder
+                'param_values': [],
+                'objective_function_values':[],
+                }
+            if i not in fixed_indices:
+                for param_value in param_range:
+                    x_temp[i] = param_value if i != master_parameter_index else matser_param_value
+                    # Apply the solution to the synthesizer
+                    loaded_synth_temp = set_parameters(plugin, x_temp[0:NUM_TAL_UNO_PARAMETERS].numpy())
+
+                    # convert the midi parameters to the correct format
+                    midi_velocity = midi_velocity_float_to_int(x_temp[NUM_TAL_UNO_PARAMETERS].item())
+                    midi_duration = midi_duration_float_to_sec(x_temp[NUM_TAL_UNO_PARAMETERS+1].item())
+
+                    # Generate the sound and extract its MFCC features
+                    current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
+                    
+                    # write the audio to a wav file
+                    wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 4 else None
+
+                    # objective function variable assignment
+                    current_objective = objective_func(current_mfcc_temp, target_mfcc)   
+
+                    # get the parameter name assoicated with the current parameter
+                    if i < NUM_TAL_UNO_PARAMETERS:
+                        param_name = top_preset_row['mapped_parameter_names'].iloc[0][i]['dawdreamer param name']
+                    elif i == NUM_TAL_UNO_PARAMETERS:
+                        param_name = 'midi velocity'
+                    elif i == NUM_TAL_UNO_PARAMETERS + 1:
+                        param_name = 'midi duration'
+                    else:
+                        raise ValueError(f"Invalid index: {i}")
+
+                    temp_out['param_name'] = param_name
+                    temp_out['param_values'].append(param_value)
+                    temp_out['objective_function_values'].append(current_objective)
+
+                    print('Data appended...') if verbosity >= 3 else None
+                c += 1
+                print(f'Iteration {c} complete for param {param_name}...') if verbosity >= 1 else None
+                plot_data.append(temp_out)
+        master_plot_data['video frames'].append(plot_data)
+    return plot_data
+
 def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_length, closest_note, daw_settings, top_preset_row, verbosity=VERBOSITY):
     midi_piano_note = piano_note_to_midi_note(closest_note)
     midi_duration = get_midi_durations(top_preset_row)[0]
@@ -283,7 +429,7 @@ def obtain_parameter_objective_space(plugin, engine, target_mfcc, target_audio_l
             current_mfcc_temp, audio = render_audio_and_generate_mfcc(midi_piano_note, 127, midi_duration, loaded_synth_temp, engine, target_audio_length, daw_settings['SAMPLE_RATE'], verbosity=VERBOSITY, return_audio=True)
             
             # write the audio to a wav file
-            wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 'write wavs' else None
+            wavfile.write(f'audio_{i}.wav', daw_settings['SAMPLE_RATE'], audio) if verbosity == 4 else None
 
             # objective function variable assignment
             current_objective = objective_func(current_mfcc_temp, target_mfcc)   
@@ -380,7 +526,7 @@ def optimize_preset_with_greedy_gradient_mfcc(plugin, engine, target_mfcc, targe
         history['f(x)'].append(objective.item())
         history['x'].append(x.numpy())
         history['generation'].append(i + 1)
-        history['synth mfcc'].append(current_mfcc)
+        history['synth mfcc'].append(current_mfcc.reshape(20,87))
 
         # print the current generation number, objective function value
         print(f'Generation {i+1} Started. Current Objective function value: {objective}...') if verbosity >= 1 else None
@@ -640,7 +786,7 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     if ga_settings['use_initial_population'] == True:
         initial_parameters = [row['parameters'] for i, row in top10_preset_rows.iterrows()] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
     else:
-        initial_parameters = [np.random.uniform(0, 1, len(list(dawdreamer_param_name_to_tal_uno_index_mapping.keys()))) for i in range(ga_settings['sol_per_pop'])] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
+        initial_parameters = [np.random.uniform(0, 1, NUM_TAL_UNO_PARAMETERS) for i in range(ga_settings['sol_per_pop'])] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
     
     # obtain the indices of the parameters that we want to optimize from variables set in src.config
     optimize_indices, fixed_indices = get_optimize_indices()
@@ -848,7 +994,7 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
                            mutation_percent_genes=ga_settings['mutation_percent_gene'],                           initial_population=initial_parameters,
                            init_range_low=0,
                            init_range_high=1,
-                           parent_selection_type="sss",
+                           parent_selection_type=ga_settings['parent_selection_type'],
                            keep_elitism=int(ga_settings['elitism_percent']/100*ga_settings['sol_per_pop']),
                            crossover_type=ga_settings['crossover_type'],
                            crossover_probability=ga_settings['crossover_probability'],
