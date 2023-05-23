@@ -1,12 +1,14 @@
 import os
 
 NUM_TAL_UNO_PARAMETERS = 77
+NUM_TAL_UNO_PRESETS = 367
 NUM_MIDI_PARAMETERS = 2
 OBJECTIVE_FUNCTION = 'MSE'
 VERBOSITY = 1
 INITIAL_MIDI_DURATION = 0.5 # in terms of 0 to 1
 INITIAL_MIDI_VELOCITY = 1 # in terms of 0 to 1
 SAVE_AUDIO = True
+NUM_TRIALS = 3
 
 daw_settings = {
     'SAMPLE_RATE': 44100,
@@ -19,7 +21,7 @@ daw_settings = {
 }
 
 ga_settings ={
-    'num_generations': 100,
+    'num_generations': 30,
     'num_parents_mating': 100,
     'parent_selection_type': 'sss',
     'sol_per_pop': 100,

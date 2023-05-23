@@ -18,3 +18,8 @@ dataset/*.svg
 *__pycache__*
 
 audio/*
+
+*.asd
+*.pdf
+*.gsheet
+*.csv

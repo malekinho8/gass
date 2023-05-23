@@ -29,7 +29,14 @@ plt.rcParams.update({
     "font.family": "serif",
     "font.serif": ["Computer Modern Roman"],
     "font.size": 12
-})
+})   
+
+def reset_plugin(plugin,engine):
+    plugin = 0
+    engine = 0
+    engine = daw.RenderEngine(sample_rate=daw_settings['SAMPLE_RATE'], block_size=daw_settings['BLOCK_SIZE'])
+    plugin = load_plugin_with_dawdreamer(daw_settings['SYNTH_PLUGIN_PATH'],daw_settings['SYNTH_NAME'],engine)
+    return plugin, engine
 
 def save_params_to_pjunoxl(history, synth_name, preset_folder=daw_settings['PRESET_FOLDER']):
     """
@@ -44,7 +51,7 @@ def save_params_to_pjunoxl(history, synth_name, preset_folder=daw_settings['PRES
                                         Defaults to daw_settings['PRESET_FOLDER'].
 
     Returns:
-        None. Prints a message indicating success or failure of the save operation.
+        synth_parameter_vector (np.ndarray): The best synth parameter vector.
     """
     # Check the length of the mapping
     assert len(dawdreamer_param_name_to_xml_key_mapping) == NUM_TAL_UNO_PARAMETERS, f"The length of dawdreamer_param_name_to_xml_key_mapping {len(dawdreamer_param_name_to_xml_key_mapping)} is not equal to the NUM_TAL_UNO_PARAMETERS ({NUM_TAL_UNO_PARAMETERS})!"
@@ -91,7 +98,7 @@ def save_params_to_pjunoxl(history, synth_name, preset_folder=daw_settings['PRES
     except Exception as e:
         print(f"Failed to save preset file. Error: {e}")
 
-    return None
+    return synth_parameter_vector
 
 def save_mfcc_history_comparison_plots(history, save_path):
     for i, generation in enumerate(history['generation']):
@@ -788,6 +795,9 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     else:
         initial_parameters = [np.random.uniform(0, 1, NUM_TAL_UNO_PARAMETERS) for i in range(ga_settings['sol_per_pop'])] # 2D list, 10 rows, each list has 77 parameters (for Tal Uno LX)
     
+    # initialize plot history output dictionary
+    plot_history = {'x':[], 'f(x)':[], 'mean f(x)':[], 'synth mfcc':[], 'target mfcc': None, 'generation':[], 'synth params':[], 'generation time':[]}
+
     # obtain the indices of the parameters that we want to optimize from variables set in src.config
     optimize_indices, fixed_indices = get_optimize_indices()
 
@@ -813,41 +823,91 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
     # Generate the sound and extract its MFCC features
     midi_piano_note = piano_note_to_midi_note(closest_note)
 
-    # get the midi duration by converting
-    midi_duration = midi_duration_float_to_sec(0)
-
-    # get the midi velocity by converting
-    midi_velocity = midi_velocity_float_to_int(0)
+    # initialize fitness value list for the population
+    init_fitness_values = []
+    init_mfcc_features = []
+    init_synth_params = []
+    init_x = []
+    init_audio = []
     
-    # make initial_best_params a global variable so it can be accessed by the on_generation callback
-    global initial_best_params
+    # loop over each initial parameter set
+    for i, initial_parameter_set in enumerate(initial_parameters):
+        x_i = np.zeros(NUM_TAL_UNO_PARAMETERS+NUM_MIDI_PARAMETERS)
+        synth_params_i = np.zeros(NUM_TAL_UNO_PARAMETERS)
+        synth_params_temp = initial_parameter_set[0:-2]
+        synth_params_i[optimize_indices] = synth_params_temp
+        synth_params_i[fixed_indices] = fixed_parameters[i]
+        midi_velocity_i = initial_parameter_set[-2]
+        midi_duration_i = initial_parameter_set[-1]
+        x_i[0:NUM_TAL_UNO_PARAMETERS] = synth_params_i
+        x_i[-NUM_MIDI_PARAMETERS::] = initial_parameter_set[-2::]
+        
+        # convert the midi velocity and duration
+        midi_velocity_i = midi_velocity_float_to_int(midi_velocity_i)
+        midi_duration_i = midi_duration_float_to_sec(midi_duration_i)
 
-    # specify the initial best parameters
-    initial_best_params = top10_preset_rows.iloc[0]['parameters']
+        # load the synth
+        loaded_synth = set_parameters(plugin, synth_params_i)
+
+        # render the audio and generate the mfcc
+        mfcc_i, audio_i = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity_i, midi_duration_i, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'], return_audio=True)
+
+        # calculate the fitness
+        fitness_i = -objective_func(mfcc_i, target_mfcc)
+
+        # append the fitness to the list
+        init_fitness_values.append(fitness_i)
+        init_mfcc_features.append(mfcc_i)
+        init_synth_params.append(synth_params_i)
+        init_x.append(x_i)
+        init_audio.append(audio_i)
 
     # obtain the name of the top preset
-    top_preset_name = top10_preset_rows.iloc[0]['preset_names']
-
-    # load the best preset to the synthesizer plugin
-    loaded_synth = set_parameters(plugin, initial_best_params)
+    top_preset_name = top10_preset_rows.iloc[0]['preset_names'] if ga_settings['use_initial_population'] == True else 'n/a'
 
     # print the name of the top preset
     print(f'top preset name: {top_preset_name}') if verbosity >= 1 else None
+    
+    # get the index of the best initial fitness
+    best_initial_fitness_index = np.argmax(init_fitness_values) if not ga_settings['use_initial_population'] else 0
 
-    # get the starting mfcc to calculate the starting fitness
-    initial_mfcc = render_audio_and_generate_mfcc(midi_piano_note, midi_velocity, midi_duration, loaded_synth, engine, target_audio_length, daw_settings['SAMPLE_RATE'])
+    # get the best initial fitness
+    best_initial_fitness = init_fitness_values[best_initial_fitness_index]
 
-    # calculate the initial fitness
-    initial_fitness = -objective_func(initial_mfcc, target_mfcc)
+    # get the best initial parameters
+    initial_best_params = init_synth_params[best_initial_fitness_index]
+
+    # get the synth mfcc corresponding to the best initial fitness
+    best_initial_mfcc = init_mfcc_features[best_initial_fitness_index]
+
+    # get the best x vector
+    best_x = init_x[best_initial_fitness_index]
+
+    # select the best audio
+    best_audio = init_audio[best_initial_fitness_index]
+
+    # save the audio...
+    wavfile.write(f'audio_test.wav', daw_settings['SAMPLE_RATE'], best_audio) if verbosity == 4 else None
+
+    # delete the init_audio
+    init_audio = 0
 
     # print the initial fitness
-    print(f'initial_fitness: {initial_fitness}') if verbosity >= 1 else None
+    print(f'initial_fitness: {best_initial_fitness}') if verbosity >= 1 else None
+
+    # output the values to the plot_history dictionary
+    plot_history['f(x)'].append(-best_initial_fitness)
+    plot_history['x'].append(best_x)
+    plot_history['synth mfcc'].append(best_initial_mfcc)
+    plot_history['target mfcc'] = target_mfcc
+    plot_history['synth params'].append(initial_best_params)
+    plot_history['mean f(x)'].append(-np.mean(init_fitness_values))
+    plot_history['generation'].append(0)
 
     # test_mfcc
     test_mfcc = 0
 
     # Define callback function for each generation
-    plot_history = {'x':[], 'f(x)':[], 'mean f(x)':[], 'synth mfcc':[], 'target mfcc': None, 'generation':[], 'synth params':[], 'generation time':[]}
     def on_generation(ga_instance):      
         # specify the generation number
         generation_number = ga_instance.generations_completed
@@ -912,7 +972,6 @@ def optimize_preset_with_ga_mfcc(top10_preset_rows, plugin, engine, target_mfcc,
 
         # append test mfcc and target mfcc to plot history
         plot_history['synth mfcc'].append(test_mfcc.reshape(20,87))
-        plot_history['target mfcc'] = target_mfcc.reshape(20,87)
 
         # append the synth params to plot history
         plot_history['synth params'].append(synth_params)
