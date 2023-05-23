@@ -2,4 +2,6 @@ body{
     margin:0;
     background:pink;
     text-align:center;
+    font-family:'Computer Modern';
+    src: url('https://cdn.rawgit.com/dreampulse/computer-modern-web-font/master/fonts.css');
 }
